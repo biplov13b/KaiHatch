@@ -699,7 +699,48 @@ class ExampleRobolectricTest {
             assertEquals(false, insetsController.isAppearanceLightNavigationBars)
         }
     }
+
+    @Test
+    fun `test settings about card external links and verified open source licenses`() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+
+        // 1. Verify exact destination URLs and email address
+        assertEquals("https://github.com/biplov13b/KaiHatch", com.example.ui.screens.ABOUT_WEBSITE_URL)
+        assertEquals("biplovbiswas13@gmail.com", com.example.ui.screens.ABOUT_EMAIL_ADDRESS)
+        assertEquals("https://t.me/+SWFrkNxbWDRlMWFl", com.example.ui.screens.ABOUT_TELEGRAM_URL)
+        assertEquals("https://ko-fi.com/biplov13b", com.example.ui.screens.ABOUT_KOFI_URL)
+
+        // 2. Verify Intent construction & dispatch for Website, Email, Telegram, and Ko-fi
+        val websiteIntent = com.example.ui.screens.createExternalUrlIntent(com.example.ui.screens.ABOUT_WEBSITE_URL)
+        assertEquals(android.content.Intent.ACTION_VIEW, websiteIntent.action)
+        assertEquals(Uri.parse("https://github.com/biplov13b/KaiHatch"), websiteIntent.data)
+
+        val emailIntent = com.example.ui.screens.createEmailContactIntent(com.example.ui.screens.ABOUT_EMAIL_ADDRESS)
+        assertEquals(android.content.Intent.ACTION_SENDTO, emailIntent.action)
+        assertEquals(Uri.parse("mailto:biplovbiswas13@gmail.com"), emailIntent.data)
+
+        val telegramIntent = com.example.ui.screens.createExternalUrlIntent(com.example.ui.screens.ABOUT_TELEGRAM_URL)
+        assertEquals(android.content.Intent.ACTION_VIEW, telegramIntent.action)
+        assertEquals(Uri.parse("https://t.me/+SWFrkNxbWDRlMWFl"), telegramIntent.data)
+
+        val kofiIntent = com.example.ui.screens.createExternalUrlIntent(com.example.ui.screens.ABOUT_KOFI_URL)
+        assertEquals(android.content.Intent.ACTION_VIEW, kofiIntent.action)
+        assertEquals(Uri.parse("https://ko-fi.com/biplov13b"), kofiIntent.data)
+
+        assertTrue(com.example.ui.screens.openExternalUrl(app, com.example.ui.screens.ABOUT_WEBSITE_URL))
+        assertTrue(com.example.ui.screens.openEmailContact(app, com.example.ui.screens.ABOUT_EMAIL_ADDRESS))
+        assertTrue(com.example.ui.screens.openExternalUrl(app, com.example.ui.screens.ABOUT_TELEGRAM_URL))
+        assertTrue(com.example.ui.screens.openExternalUrl(app, com.example.ui.screens.ABOUT_KOFI_URL))
+
+        // 3. Verify Open-source licenses notices list matches verified project dependencies
+        val notices = com.example.ui.screens.VERIFIED_THIRD_PARTY_NOTICES
+        assertEquals(12, notices.size)
+        assertTrue(notices.any { it.name == "Apache Commons Compress" && it.version == "1.26.2" })
+        assertTrue(notices.any { it.name == "XZ for Java" && it.license.contains("0BSD") })
+        assertTrue(notices.any { it.name == "AndroidX Jetpack Compose" && it.version == "2026.03.00" })
+    }
 }
+
 
 
 

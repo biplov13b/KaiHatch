@@ -27,6 +27,54 @@ Normally, unpacking a large archive on your phone requires enough free storage t
 
 ---
 
+## Screenshots
+
+Captured on a Google Pixel 8.
+
+### Unpacking & Storage Efficiency
+
+Select a local archive, choose between in-place Hatch Mode and non-destructive Standard Mode, and inspect estimated peak storage savings before unpacking begins.
+
+<p align="center">
+  <img src="docs/screenshots/01-home.png" alt="KaiHatch home screen with archive selection and saved storage summary" width="30%" />
+  &nbsp;
+  <img src="docs/screenshots/02-extraction-setup.png" alt="Archive extraction setup with Hatch Mode enabled and entry overview" width="30%" />
+  &nbsp;
+  <img src="docs/screenshots/03-storage-comparison.png" alt="Storage footprint comparison between Standard Mode and Hatch Mode" width="30%" />
+</p>
+
+### Extraction in Action
+
+Follow live extraction progress as archive space is reclaimed in place, then browse and open unpacked files directly from local storage.
+
+<p align="center">
+  <img src="docs/screenshots/04-live-extraction.png" alt="Live Hatch Mode extraction progress and real-time storage reclamation" width="30%" />
+  &nbsp;&nbsp;
+  <img src="docs/screenshots/05-extracted-files.png" alt="Extracted files browser with direct file actions" width="30%" />
+</p>
+
+### Archive Creation
+
+Pack local files and folders into new archives with configurable format and compression options in Pack Studio.
+
+<p align="center">
+  <img src="docs/screenshots/06-pack-studio.png" alt="Pack Studio screen for creating new archives" width="30%" />
+</p>
+
+### Settings & Personalization
+
+Customize Light, Dark, or System themes and accent palettes, manage persistent local folder access and unpacking defaults, and access project links and open-source licenses.
+
+<p align="center">
+  <img src="docs/screenshots/07-appearance.png" alt="Settings screen showing theme modes and expressive accent color palettes" width="30%" />
+  &nbsp;
+  <img src="docs/screenshots/08-storage-settings.png" alt="Settings screen showing persistent folder access and unpacking options" width="30%" />
+  &nbsp;
+  <img src="docs/screenshots/09-about.png" alt="Settings About card with KaiHatch branding, contact links, Ko-fi support, and open-source licenses" width="30%" />
+</p>
+
+---
+
 ## Key Features
 
 | | Feature | Description |
@@ -35,8 +83,6 @@ Normally, unpacking a large archive on your phone requires enough free storage t
 | <img src="docs/assets/features/integrity-check.svg" width="32" height="32" alt="Integrity check" /> | **Verify Before Truncate** | Validates extracted output against archive `CRC32` checksums and syncs data to disk (`fsync`) before removing corresponding bytes from the archive. |
 | <img src="docs/assets/features/local-storage.svg" width="32" height="32" alt="Local storage" /> | **Direct Local & SAF Storage Access** | Works directly on writable local Android storage—including **Downloads** and **Internal / SD Card Storage** via Android's Storage Access Framework (`"rw"` file descriptors). |
 | <img src="docs/assets/features/appearance.svg" width="32" height="32" alt="Appearance" /> | **Adaptive Material 3 Interface** | Clean, distraction-free Android UI with Light, Dark, and System themes, real-time storage telemetry, and built-in Space Lab storage modeling. |
-
-> *Device screenshots from Pixel 8 (Light & Dark themes, Hatch Mode extraction telemetry, and Space Lab) will be added here in an upcoming update.*
 
 ---
 

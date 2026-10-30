@@ -1100,43 +1100,8 @@ fun SettingsScreen(
             }
 
         Column {
-            Spacer(modifier = Modifier.height(6.dp))
-            Column(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(surfaceContainerLow, FooterCardShape)
-                    .padding(vertical = 22.dp, horizontal = 20.dp)
-                    .testTag("made_by_biplov_footer"),
-                horizontalAlignment = Alignment.CenterHorizontally
-            ) {
-                Text(
-                    text = "KAIHATCH • ARCHIVE STUDIO",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = onPrimaryContainer,
-                    modifier = Modifier
-                        .background(primaryContainer, PillShape)
-                        .padding(horizontal = 12.dp, vertical = 4.dp)
-                )
-
-                Spacer(modifier = Modifier.height(10.dp))
-
-                Text(
-                    text = "Made by Biplov",
-                    style = MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.ExtraBold,
-                    color = onSurface,
-                    textAlign = TextAlign.Center
-                )
-
-                Spacer(modifier = Modifier.height(4.dp))
-
-                Text(
-                    text = "Crafted with Material 3 Expressive design for fast, zero-copy archive unpacking",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = onSurfaceVariant,
-                    textAlign = TextAlign.Center
-                )
-            }
+            Spacer(modifier = Modifier.height(8.dp))
+            SettingsAboutCard(isDark = isDark)
         }
     }
 }
