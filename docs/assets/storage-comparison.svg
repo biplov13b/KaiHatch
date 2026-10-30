@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 420" width="1000" height="420" fill="none">
+  <rect width="1000" height="420" rx="14" fill="#F8FAFC"/>
+  <rect x="1" y="1" width="998" height="418" rx="13" stroke="#CBD5E1" stroke-width="2"/>
+
+  <!-- DIAGRAM 1: STANDARD EXTRACTION -->
+  <g transform="translate(40, 32)">
+    <text x="0" y="24" fill="#0F172A" font-family="Liberation Sans, DejaVu Sans, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="20" font-weight="700">STANDARD EXTRACTION</text>
+    <text x="920" y="24" text-anchor="end" fill="#334155" font-family="Liberation Sans, DejaVu Sans, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="15" font-weight="500">Original archive + extracted output occupy disk simultaneously</text>
+
+    <!-- Outer Storage Container Bar -->
+    <rect x="0" y="40" width="920" height="96" rx="10" fill="#FFFFFF" stroke="#CBD5E1" stroke-width="2"/>
+
+    <!-- Segment 1: Existing Device Files -->
+    <rect x="12" y="52" width="180" height="72" rx="6" fill="#CBD5E1"/>
+    <text x="102" y="93" text-anchor="middle" fill="#0F172A" font-family="Liberation Sans, DejaVu Sans, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="15" font-weight="600">Existing Data</text>
+
+    <!-- Segment 2: Original Archive (Unchanged) -->
+    <rect x="200" y="52" width="310" height="72" rx="6" fill="#3B6E8C"/>
+    <text x="355" y="85" text-anchor="middle" fill="#FFFFFF" font-family="Liberation Sans, DejaVu Sans, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="16" font-weight="700">Original Archive</text>
+    <text x="355" y="107" text-anchor="middle" fill="#E2EDF5" font-family="JetBrains Mono, DejaVu Sans Mono, ui-monospace, SFMono-Regular, Consolas, monospace" font-size="13" font-weight="500">Remains on disk</text>
+
+    <!-- Segment 3: Extracted Output (Additional Space) -->
+    <rect x="518" y="52" width="310" height="72" rx="6" fill="#5282A6"/>
+    <text x="673" y="85" text-anchor="middle" fill="#FFFFFF" font-family="Liberation Sans, DejaVu Sans, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="16" font-weight="700">Extracted Output</text>
+    <text x="673" y="107" text-anchor="middle" fill="#FFFFFF" font-family="JetBrains Mono, DejaVu Sans Mono, ui-monospace, SFMono-Regular, Consolas, monospace" font-size="13" font-weight="500">Requires additional space</text>
+
+    <!-- Segment 4: Remaining Free Space -->
+    <rect x="836" y="52" width="72" height="72" rx="6" fill="#F1F5F9" stroke="#CBD5E1" stroke-width="1.5" stroke-dasharray="4 4"/>
+    <text x="872" y="93" text-anchor="middle" fill="#64748B" font-family="JetBrains Mono, DejaVu Sans Mono, ui-monospace, SFMono-Regular, Consolas, monospace" font-size="13" font-weight="600">Free</text>
+  </g>
+
+  <!-- DIAGRAM 2: HATCH MODE -->
+  <g transform="translate(40, 196)">
+    <text x="0" y="24" fill="#0F172A" font-family="Liberation Sans, DejaVu Sans, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="20" font-weight="700">HATCH MODE</text>
+    <text x="920" y="24" text-anchor="end" fill="#0F766E" font-family="Liberation Sans, DejaVu Sans, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="15" font-weight="600">Archive storage is reclaimed as verified files are extracted</text>
+
+    <!-- Outer Storage Container Bar -->
+    <rect x="0" y="40" width="920" height="96" rx="10" fill="#FFFFFF" stroke="#0D9488" stroke-width="2"/>
+
+    <!-- Segment 1: Existing Device Files -->
+    <rect x="12" y="52" width="180" height="72" rx="6" fill="#CBD5E1"/>
+    <text x="102" y="93" text-anchor="middle" fill="#0F172A" font-family="Liberation Sans, DejaVu Sans, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="15" font-weight="600">Existing Data</text>
+
+    <!-- Segment 2: Remaining Archive (Shrinking) -->
+    <rect x="200" y="52" width="110" height="72" rx="6" fill="#3B6E8C"/>
+    <text x="255" y="85" text-anchor="middle" fill="#FFFFFF" font-family="Liberation Sans, DejaVu Sans, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="15" font-weight="700">Archive</text>
+    <text x="255" y="106" text-anchor="middle" fill="#E2EDF5" font-family="JetBrains Mono, DejaVu Sans Mono, ui-monospace, SFMono-Regular, Consolas, monospace" font-size="12" font-weight="500">Shrinking</text>
+
+    <!-- Segment 3: Verified Extracted Files (Reclaiming Archive Space) -->
+    <rect x="318" y="52" width="230" height="72" rx="6" fill="#0D9488"/>
+    <text x="433" y="85" text-anchor="middle" fill="#FFFFFF" font-family="Liberation Sans, DejaVu Sans, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="16" font-weight="700">Verified Extracted Files</text>
+    <text x="433" y="107" text-anchor="middle" fill="#CCFBF1" font-family="JetBrains Mono, DejaVu Sans Mono, ui-monospace, SFMono-Regular, Consolas, monospace" font-size="13" font-weight="500">Reclaims archive space</text>
+
+    <!-- Segment 4: Active Working Space for Current Entry -->
+    <rect x="556" y="52" width="88" height="72" rx="6" fill="#F0FDFA" stroke="#0D9488" stroke-width="2" stroke-dasharray="5 3"/>
+    <text x="600" y="84" text-anchor="middle" fill="#0F766E" font-family="JetBrains Mono, DejaVu Sans Mono, ui-monospace, SFMono-Regular, Consolas, monospace" font-size="12" font-weight="600">Active</text>
+    <text x="600" y="103" text-anchor="middle" fill="#0F766E" font-family="JetBrains Mono, DejaVu Sans Mono, ui-monospace, SFMono-Regular, Consolas, monospace" font-size="12" font-weight="600">Entry</text>
+
+    <!-- Segment 5: Free Space Available -->
+    <rect x="652" y="52" width="256" height="72" rx="6" fill="#F1F5F9" stroke="#CBD5E1" stroke-width="1.5" stroke-dasharray="4 4"/>
+    <text x="780" y="93" text-anchor="middle" fill="#334155" font-family="Liberation Sans, DejaVu Sans, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="15" font-weight="600">Available Free Storage</text>
+  </g>
+
+  <!-- Footnote -->
+  <text x="500" y="388" text-anchor="middle" fill="#64748B" font-family="Liberation Sans, DejaVu Sans, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="15" font-weight="500">Illustrative storage behavior. Actual space requirements depend on archive contents.</text>
+</svg>

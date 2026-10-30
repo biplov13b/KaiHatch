@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" fill="none">
+  <path d="M8 18C8 14.6863 10.6863 12 14 12H25L31 18H50C53.3137 18 56 20.6863 56 24V48C56 51.3137 53.3137 54 50 54H14C10.6863 54 8 51.3137 8 48V18Z" fill="#E2EDF5" stroke="#3B6E8C" stroke-width="3" stroke-linejoin="round"/>
+  <!-- Internal storage bar inside folder -->
+  <rect x="16" y="34" width="32" height="10" rx="3" fill="#FFFFFF" stroke="#0D9488" stroke-width="2.5"/>
+  <rect x="19" y="37" width="16" height="4" rx="1.5" fill="#0D9488"/>
+</svg>
