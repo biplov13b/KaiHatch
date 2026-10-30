@@ -1,0 +1,121 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <group
+        android:translateX="11.65"
+        android:translateY="12.23"
+        android:scaleX="0.0827"
+        android:scaleY="0.0827">
+
+        <!-- 1. Top Document Sheet Peeking Out -->
+        <path
+            android:pathData="M360,244 C360,213 385,188 416,188 L626,188 L754,316 L754,460 L360,460 Z">
+            <aapt:attr name="android:fillColor">
+                <gradient
+                    android:startX="360"
+                    android:startY="188"
+                    android:endX="754"
+                    android:endY="420"
+                    android:type="linear">
+                    <item android:offset="0.0" android:color="#F4F8FF" />
+                    <item android:offset="1.0" android:color="#D2E1FC" />
+                </gradient>
+            </aapt:attr>
+        </path>
+
+        <!-- Document Dog-Ear Folded Corner -->
+        <path
+            android:pathData="M626,188 L754,316 L668,316 C645,316 626,297 626,274 Z"
+            android:fillColor="#B6CCF8" />
+
+        <!-- 2. Main Rounded Blue Folder Body -->
+        <path
+            android:pathData="M212,320 C212,289 237,264 268,264 L415,264 C448,264 468,280 495,312 C520,340 538,352 572,352 L752,352 C787,352 816,381 816,416 L816,718 C816,771 773,814 720,814 L308,814 C255,814 212,771 212,718 Z">
+            <aapt:attr name="android:fillColor">
+                <gradient
+                    android:startX="212"
+                    android:startY="264"
+                    android:endX="816"
+                    android:endY="814"
+                    android:type="linear">
+                    <item android:offset="0.0" android:color="#4A8BFF" />
+                    <item android:offset="0.52" android:color="#2463EB" />
+                    <item android:offset="1.0" android:color="#0E3685" />
+                </gradient>
+            </aapt:attr>
+        </path>
+
+        <!-- 3. Geometric Letter K: Lower-Right Diagonal Leg -->
+        <path
+            android:pathData="M435,512 L636,690 C657,709 659,741 640,760 C630,766 618,768 604,768 L545,768 C531,768 518,762 508,753 L378,632 Z">
+            <aapt:attr name="android:fillColor">
+                <gradient
+                    android:startX="390"
+                    android:startY="540"
+                    android:endX="645"
+                    android:endY="768"
+                    android:type="linear">
+                    <item android:offset="0.0" android:color="#E3EEFF" />
+                    <item android:offset="1.0" android:color="#A6C4FF" />
+                </gradient>
+            </aapt:attr>
+        </path>
+
+        <!-- Geometric Letter K: Upper-Right Diagonal Arm -->
+        <path
+            android:pathData="M378,546 L528,412 C538,403 551,398 565,398 L602,398 C631,398 654,421 654,450 C654,465 647,479 636,489 L452,652 Z">
+            <aapt:attr name="android:fillColor">
+                <gradient
+                    android:startX="385"
+                    android:startY="620"
+                    android:endX="645"
+                    android:endY="400"
+                    android:type="linear">
+                    <item android:offset="0.0" android:color="#499FFF" />
+                    <item android:offset="0.45" android:color="#87CBFF" />
+                    <item android:offset="1.0" android:color="#D6EEFF" />
+                </gradient>
+            </aapt:attr>
+        </path>
+
+        <!-- Geometric Letter K: Center Overlap Diamond Facet -->
+        <path
+            android:pathData="M378,546 L454,478 L522,540 L446,608 Z"
+            android:fillColor="#3D95FF" />
+
+        <!-- Geometric Letter K: Left Vertical Pill -->
+        <path
+            android:pathData="M369,368 C399,368 423,392 423,422 L423,714 C423,744 399,768 369,768 C339,768 315,744 315,714 L315,422 C315,392 339,368 369,368 Z">
+            <aapt:attr name="android:fillColor">
+                <gradient
+                    android:startX="369"
+                    android:startY="368"
+                    android:endX="369"
+                    android:endY="768"
+                    android:type="linear">
+                    <item android:offset="0.0" android:color="#DCF0FF" />
+                    <item android:offset="0.55" android:color="#7BC0FF" />
+                    <item android:offset="1.0" android:color="#3190FF" />
+                </gradient>
+            </aapt:attr>
+        </path>
+
+        <!-- 4. Dashed Download Arrow on Right -->
+        <path
+            android:pathData="M734,404 L754,404 C761,404 766,409 766,416 L766,460 C766,467 761,472 754,472 L734,472 C727,472 722,467 722,460 L722,416 C722,409 727,404 734,404 Z"
+            android:fillColor="#EBF3FF" />
+        <path
+            android:pathData="M734,490 L754,490 C761,490 766,495 766,502 L766,546 C766,553 761,558 754,558 L734,558 C727,558 722,553 722,546 L722,502 C722,495 727,490 734,490 Z"
+            android:fillColor="#DCE9FD" />
+        <path
+            android:pathData="M734,576 L754,576 C761,576 766,581 766,588 L766,632 C766,639 761,644 754,644 L734,644 C727,644 722,639 722,632 L722,588 C722,581 727,576 734,576 Z"
+            android:fillColor="#CEDFFB" />
+        <path
+            android:pathData="M704,662 L784,662 C791,662 795,670 791,676 L751,728 C747,733 741,733 737,728 L697,676 C693,670 697,662 704,662 Z"
+            android:fillColor="#C6DAFA" />
+    </group>
+</vector>

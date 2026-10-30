@@ -1,0 +1,12 @@
+<resources>
+    <string name="app_name">KaiHatch</string>
+    <string name="shortcut_extract_short">Extract</string>
+    <string name="shortcut_extract_long">Extract Archive</string>
+    <string name="shortcut_extract_disabled">Extract is unavailable</string>
+    <string name="shortcut_labs_short">Labs</string>
+    <string name="shortcut_labs_long">Space Lab</string>
+    <string name="shortcut_labs_disabled">Labs is unavailable</string>
+    <string name="shortcut_settings_short">Settings</string>
+    <string name="shortcut_settings_long">Settings</string>
+    <string name="shortcut_settings_disabled">Settings is unavailable</string>
+</resources>

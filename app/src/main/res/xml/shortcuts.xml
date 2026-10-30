@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <shortcut
+        android:shortcutId="shortcut_extract"
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_extract"
+        android:shortcutShortLabel="@string/shortcut_extract_short"
+        android:shortcutLongLabel="@string/shortcut_extract_long"
+        android:shortcutDisabledMessage="@string/shortcut_extract_disabled">
+        <intent
+            android:action="com.biplov.kaihatch.SHORTCUT_EXTRACT"
+            android:targetPackage="com.biplov.kaihatch"
+            android:targetClass="com.example.MainActivity" />
+        <categories android:name="android.shortcut.conversation" />
+    </shortcut>
+
+    <shortcut
+        android:shortcutId="shortcut_labs"
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_labs"
+        android:shortcutShortLabel="@string/shortcut_labs_short"
+        android:shortcutLongLabel="@string/shortcut_labs_long"
+        android:shortcutDisabledMessage="@string/shortcut_labs_disabled">
+        <intent
+            android:action="com.biplov.kaihatch.SHORTCUT_LABS"
+            android:targetPackage="com.biplov.kaihatch"
+            android:targetClass="com.example.MainActivity" />
+        <categories android:name="android.shortcut.conversation" />
+    </shortcut>
+
+    <shortcut
+        android:shortcutId="shortcut_settings"
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_settings"
+        android:shortcutShortLabel="@string/shortcut_settings_short"
+        android:shortcutLongLabel="@string/shortcut_settings_long"
+        android:shortcutDisabledMessage="@string/shortcut_settings_disabled">
+        <intent
+            android:action="com.biplov.kaihatch.SHORTCUT_SETTINGS"
+            android:targetPackage="com.biplov.kaihatch"
+            android:targetClass="com.example.MainActivity" />
+        <categories android:name="android.shortcut.conversation" />
+    </shortcut>
+
+</shortcuts>

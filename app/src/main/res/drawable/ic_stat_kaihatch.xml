@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="1024"
+    android:viewportHeight="1024">
+    <!-- Pure white alpha mask required by Android Status Bar Notification guidelines -->
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:pathData="M340,210 C340,175 368,148 402,148 L630,148 L770,288 L770,320 L572,320 C540,320 522,308 495,276 C468,244 448,228 415,228 L340,228 Z" />
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="M168,310 C168,274 197,245 233,245 L410,245 C446,245 468,262 496,296 C522,326 542,340 578,340 L790,340 C830,340 862,372 862,412 L862,756 C862,816 814,864 754,864 L276,864 C216,864 168,816 168,756 Z M356,368 C320,368 292,396 292,432 L292,728 C292,764 320,792 356,792 C392,792 420,764 420,728 L420,628 L518,772 C530,785 546,792 564,792 L614,792 C650,792 672,754 652,722 L522,570 L648,484 C676,462 672,418 642,396 C630,388 616,384 600,384 L556,384 C538,384 522,392 510,404 L420,502 L420,432 C420,396 392,368 356,368 Z M742,404 L774,404 L774,478 L742,478 Z M742,502 L774,502 L774,576 L742,576 Z M742,600 L774,600 L774,668 L808,668 L758,748 L708,668 L742,668 Z" />
+</vector>
