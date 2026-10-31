@@ -707,7 +707,7 @@ class ExampleRobolectricTest {
         // 1. Verify exact destination URLs and email address
         assertEquals("https://github.com/biplov13b/KaiHatch", com.example.ui.screens.ABOUT_WEBSITE_URL)
         assertEquals("biplovbiswas13@gmail.com", com.example.ui.screens.ABOUT_EMAIL_ADDRESS)
-        assertEquals("https://t.me/+SWFrkNxbWDRlMWFl", com.example.ui.screens.ABOUT_TELEGRAM_URL)
+        assertEquals("https://t.me/KaiHatch", com.example.ui.screens.ABOUT_TELEGRAM_URL)
         assertEquals("https://ko-fi.com/biplov13b", com.example.ui.screens.ABOUT_KOFI_URL)
 
         // 2. Verify Intent construction & dispatch for Website, Email, Telegram, and Ko-fi
@@ -721,7 +721,7 @@ class ExampleRobolectricTest {
 
         val telegramIntent = com.example.ui.screens.createExternalUrlIntent(com.example.ui.screens.ABOUT_TELEGRAM_URL)
         assertEquals(android.content.Intent.ACTION_VIEW, telegramIntent.action)
-        assertEquals(Uri.parse("https://t.me/+SWFrkNxbWDRlMWFl"), telegramIntent.data)
+        assertEquals(Uri.parse("https://t.me/KaiHatch"), telegramIntent.data)
 
         val kofiIntent = com.example.ui.screens.createExternalUrlIntent(com.example.ui.screens.ABOUT_KOFI_URL)
         assertEquals(android.content.Intent.ACTION_VIEW, kofiIntent.action)

@@ -80,7 +80,7 @@ import com.example.ui.theme.JetBrainsMonoFontFamily
 
 internal const val ABOUT_WEBSITE_URL = "https://github.com/biplov13b/KaiHatch"
 internal const val ABOUT_EMAIL_ADDRESS = "biplovbiswas13@gmail.com"
-internal const val ABOUT_TELEGRAM_URL = "https://t.me/+SWFrkNxbWDRlMWFl"
+internal const val ABOUT_TELEGRAM_URL = "https://t.me/KaiHatch"
 internal const val ABOUT_KOFI_URL = "https://ko-fi.com/biplov13b"
 internal const val APACHE_2_LICENSE_URL = "https://www.apache.org/licenses/LICENSE-2.0"
 internal const val HATCHZIP_INSPIRATION_URL = "https://github.com/Fabiannez/HatchZip"
