@@ -10,6 +10,10 @@
 
 **Extract archives on Android without needing twice the free storage.**
 
+<p align="center">
+  <strong><a href="https://github.com/biplov13b/KaiHatch/releases">Download APK on GitHub Releases</a></strong>
+</p>
+
 ---
 
 ## What KaiHatch Does
@@ -146,12 +150,15 @@ KaiHatch's **Hatch Mode** reduces peak storage usage through four mechanisms:
 
 ## Installation & APK Download Instructions
 
-1. **Download the APK:**
-   - **From GitHub Releases:** Download the latest `.apk` from the repository's **Releases** page (when published), or
-   - **From GitHub Actions:** Open the [**Actions**](../../actions) tab, select the latest successful **Build KaiHatch APK** workflow run on `main`, and download the **`KaiHatch-Debug-APK`** artifact (unzip the artifact archive to access `app-debug.apk`).
-2. **Install on Android:**
-   - Open the `.apk` file on a device running **Android 7.0 (API 24) or newer** and allow installation from your browser or file manager if prompted.
-3. **First-Launch Setup:**
+Official signed APK builds are distributed through [**GitHub Releases**](https://github.com/biplov13b/KaiHatch/releases) once published.
+
+1. **Open GitHub Releases:**
+   - Visit the official [**KaiHatch Releases**](https://github.com/biplov13b/KaiHatch/releases) page. *(If no release is listed yet, the first public signed APK is still being prepared for publication.)*
+2. **Download the APK:**
+   - Locate the latest release, expand the **Assets** section, and download the `KaiHatch-<version>.apk` file (an accompanying `.sha256` checksum file is also provided to verify download integrity).
+3. **Install on Android:**
+   - Open the downloaded `.apk` file on a device running **Android 7.0 (API 24) or newer** and allow installation from your browser or file manager if prompted.
+4. **First-Launch Setup:**
    - On first launch, KaiHatch walks you through a brief 4-screen onboarding flow where you can choose your preferred theme (**Light**, **Dark**, or **System**) and optionally grant a default local destination folder (such as `Download`).
 
 ---
@@ -201,6 +208,16 @@ KaiHatch includes a JVM and Robolectric test suite covering fault injection, cra
 4. **Solid `.7z` and `.tar.gz` Archives:** Progressive tail-truncation is mathematically impossible on single-dictionary solid `.7z` streams and `.tar.gz` streams without decompressing from byte `0`. Use **Standard Mode** for these formats.
 5. **Encrypted Archives:** Password-protected and AES-encrypted `.zip` and `.7z` archives are detected and rejected with an explicit unsupported-encryption error.
 6. **SAF Destination Directory Permissions:** Extracting via SAF requires selecting a writable local output folder via `ACTION_OPEN_DOCUMENT_TREE`.
+
+---
+
+## Support Development
+
+KaiHatch is an independent open-source project built and maintained by Biplov.
+
+If KaiHatch saves your storage space or helps you unpack large archives on Android, you can support ongoing development on Ko-fi:
+
+https://ko-fi.com/biplov13b
 
 ---
 

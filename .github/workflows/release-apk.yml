@@ -1,0 +1,247 @@
+name: Release Signed KaiHatch APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      version_tag:
+        description: 'Release version tag (must start with v and match versionName in app/build.gradle.kts, e.g., v1.0)'
+        required: true
+        type: string
+        default: 'v1.0'
+      prerelease:
+        description: 'Mark draft release as a pre-release'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kaihatch-release-${{ inputs.version_tag }}
+  cancel-in-progress: false
+
+jobs:
+  release-apk:
+    name: Build, Sign & Draft Release APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Validate signing secrets
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          missing=0
+          for secret_name in ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASSWORD ANDROID_KEY_ALIAS ANDROID_KEY_PASSWORD; do
+            if [ -z "${!secret_name}" ]; then
+              echo "::error::Required GitHub Actions secret '${secret_name}' is not set or is empty. Configure all four signing secrets in Repository Settings -> Secrets and variables -> Actions. See docs/RELEASING.md for details."
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Validate version tag and check for existing release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_TAG: ${{ inputs.version_tag }}
+        run: |
+          if [[ ! "$INPUT_TAG" =~ ^v[0-9]+\.[0-9]+(\.[0-9]+)?(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::Invalid version_tag '${INPUT_TAG}'. Expected format starting with 'v' such as 'v1.0' or 'v1.0.1'."
+            exit 1
+          fi
+
+          EXPECTED_VERSION_NAME="${INPUT_TAG#v}"
+          GRADLE_VERSION_NAME=$(sed -n 's/^[[:space:]]*versionName[[:space:]]*=[[:space:]]*"\([^"]*\)".*/\1/p' app/build.gradle.kts | head -n 1)
+          GRADLE_VERSION_CODE=$(sed -n 's/^[[:space:]]*versionCode[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).*/\1/p' app/build.gradle.kts | head -n 1)
+
+          if [ -z "$GRADLE_VERSION_NAME" ] || [ -z "$GRADLE_VERSION_CODE" ]; then
+            echo "::error::Could not parse versionName or versionCode from app/build.gradle.kts."
+            exit 1
+          fi
+
+          if [ "$GRADLE_VERSION_NAME" != "$EXPECTED_VERSION_NAME" ]; then
+            echo "::error::Tag '${INPUT_TAG}' expects versionName=\"${EXPECTED_VERSION_NAME}\", but app/build.gradle.kts has versionName=\"${GRADLE_VERSION_NAME}\". Update app/build.gradle.kts first."
+            exit 1
+          fi
+
+          if git rev-parse -q --verify "refs/tags/${INPUT_TAG}" >/dev/null; then
+            echo "::error::Git tag '${INPUT_TAG}' already exists in the repository. Refuse to overwrite existing tag."
+            exit 1
+          fi
+
+          if gh release view "$INPUT_TAG" >/dev/null 2>&1; then
+            echo "::error::A GitHub Release (or draft) for '${INPUT_TAG}' already exists. Delete the draft or increment the version before running again."
+            exit 1
+          fi
+
+          echo "VERSION_TAG=${INPUT_TAG}" >> "$GITHUB_ENV"
+          echo "VERSION_NAME=${GRADLE_VERSION_NAME}" >> "$GITHUB_ENV"
+          echo "VERSION_CODE=${GRADLE_VERSION_CODE}" >> "$GITHUB_ENV"
+          echo "APK_FILENAME=KaiHatch-${INPUT_TAG}.apk" >> "$GITHUB_ENV"
+          echo "SHA256_FILENAME=KaiHatch-${INPUT_TAG}.apk.sha256" >> "$GITHUB_ENV"
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools'
+
+      - name: Install Android SDK components
+        run: |
+          sdkmanager "platform-tools" "platforms;android-36" "platforms;android-36.1" "build-tools;36.0.0"
+
+      - name: Make Gradle wrapper executable
+        run: chmod +x ./gradlew
+
+      - name: Generate debug keystore for Gradle configuration
+        run: |
+          if [ ! -f debug.keystore ]; then
+            keytool -genkeypair \
+              -v \
+              -keystore debug.keystore \
+              -storepass android \
+              -alias androiddebugkey \
+              -keypass android \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
+
+      - name: Decode and prepare release signing keystore
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          KEYSTORE_FILE="${RUNNER_TEMP}/kaihatch-release.jks"
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | tr -d ' \t\r\n' | base64 --decode > "$KEYSTORE_FILE"
+          chmod 600 "$KEYSTORE_FILE"
+
+          if ! keytool -list -keystore "$KEYSTORE_FILE" -storepass "$ANDROID_KEYSTORE_PASSWORD" -alias "$ANDROID_KEY_ALIAS" >/dev/null 2>&1; then
+            echo "::error::Failed to verify alias specified by ANDROID_KEY_ALIAS in the decoded release keystore. Check ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, and ANDROID_KEY_ALIAS."
+            exit 1
+          fi
+
+          # Normalize alias on the temporary runner keystore copy if ANDROID_KEY_ALIAS differs from 'upload'
+          # so app/build.gradle.kts signingConfigs.release can sign directly without modifying build.gradle.kts.
+          if [ "$ANDROID_KEY_ALIAS" != "upload" ]; then
+            if keytool -list -keystore "$KEYSTORE_FILE" -storepass "$ANDROID_KEYSTORE_PASSWORD" -alias "upload" >/dev/null 2>&1; then
+              keytool -delete -keystore "$KEYSTORE_FILE" -storepass "$ANDROID_KEYSTORE_PASSWORD" -alias "upload" >/dev/null 2>&1
+            fi
+            keytool -changealias \
+              -keystore "$KEYSTORE_FILE" \
+              -storepass "$ANDROID_KEYSTORE_PASSWORD" \
+              -keypass "$ANDROID_KEY_PASSWORD" \
+              -alias "$ANDROID_KEY_ALIAS" \
+              -destalias "upload" >/dev/null 2>&1
+          fi
+
+          echo "RELEASE_KEYSTORE_PATH=${KEYSTORE_FILE}" >> "$GITHUB_ENV"
+
+      - name: Build and sign release APK
+        env:
+          KEYSTORE_PATH: ${{ env.RELEASE_KEYSTORE_PATH }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          ./gradlew :app:assembleRelease --stacktrace
+
+      - name: Verify APK signature and generate SHA-256 checksum
+        run: |
+          UNSIGNED_OR_SIGNED_APK=$(find app/build/outputs/apk/release -maxdepth 1 -type f -name "*-release.apk" | head -n 1)
+          if [ -z "$UNSIGNED_OR_SIGNED_APK" ] || [ ! -f "$UNSIGNED_OR_SIGNED_APK" ]; then
+            echo "::error::Signed release APK (*-release.apk) was not produced under app/build/outputs/apk/release/."
+            exit 1
+          fi
+
+          RELEASE_OUT_DIR="${RUNNER_TEMP}/release-assets"
+          mkdir -p "$RELEASE_OUT_DIR"
+          FINAL_APK_PATH="${RELEASE_OUT_DIR}/${APK_FILENAME}"
+          FINAL_SHA256_PATH="${RELEASE_OUT_DIR}/${SHA256_FILENAME}"
+
+          cp "$UNSIGNED_OR_SIGNED_APK" "$FINAL_APK_PATH"
+
+          APKSIGNER="${ANDROID_HOME}/build-tools/36.0.0/apksigner"
+          if [ ! -x "$APKSIGNER" ]; then
+            APKSIGNER=$(find "${ANDROID_HOME}/build-tools" -name apksigner | sort -V | tail -n 1)
+          fi
+
+          echo "Verifying cryptographic signature on ${APK_FILENAME}..."
+          "$APKSIGNER" verify --verbose --print-certs "$FINAL_APK_PATH"
+
+          (
+            cd "$RELEASE_OUT_DIR"
+            sha256sum "$APK_FILENAME" > "$SHA256_FILENAME"
+            sha256sum --check "$SHA256_FILENAME"
+          )
+
+          echo "FINAL_APK_PATH=${FINAL_APK_PATH}" >> "$GITHUB_ENV"
+          echo "FINAL_SHA256_PATH=${FINAL_SHA256_PATH}" >> "$GITHUB_ENV"
+
+      - name: Clean up temporary keystore files
+        if: always()
+        run: |
+          rm -f "${RUNNER_TEMP}/kaihatch-release.jks"
+          rm -f debug.keystore
+
+      - name: Upload signed release APK and SHA-256 artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: KaiHatch-Release-${{ env.VERSION_TAG }}
+          path: |
+            ${{ env.FINAL_APK_PATH }}
+            ${{ env.FINAL_SHA256_PATH }}
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Create Draft GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRERELEASE_FLAG: ${{ inputs.prerelease && '--prerelease' || '' }}
+        run: |
+          CHECKSUM_LINE=$(cat "$FINAL_SHA256_PATH")
+          NOTES_FILE="${RUNNER_TEMP}/release-notes.md"
+          cat <<EOF > "$NOTES_FILE"
+          ## KaiHatch ${VERSION_TAG}
+
+          **Application ID:** \`com.biplov.kaihatch\`
+          **Version Name:** \`${VERSION_NAME}\` (\`versionCode = ${VERSION_CODE}\`)
+          **Minimum Android Version:** Android 7.0 (API 24) or newer
+
+          ### Installation
+          1. Expand **Assets** below and download **\`${APK_FILENAME}\`**.
+          2. *(Optional)* Verify integrity against **\`${SHA256_FILENAME}\`**:
+             \`\`\`text
+             ${CHECKSUM_LINE}
+             \`\`\`
+          3. Open **\`${APK_FILENAME}\`** on your Android device to install or update KaiHatch.
+          EOF
+
+          gh release create "$VERSION_TAG" \
+            "$FINAL_APK_PATH" \
+            "$FINAL_SHA256_PATH" \
+            --target "${GITHUB_SHA}" \
+            --title "KaiHatch ${VERSION_TAG}" \
+            --notes-file "$NOTES_FILE" \
+            --draft \
+            $PRERELEASE_FLAG
