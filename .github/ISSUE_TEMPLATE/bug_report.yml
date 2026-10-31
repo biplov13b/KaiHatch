@@ -1,0 +1,107 @@
+name: Bug Report
+description: Report a bug, extraction failure, UI issue, or unexpected behavior in KaiHatch.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug in **KaiHatch**.
+        > **Privacy & Security Warning:** Do **not** upload private archives, personal files, archive passwords, or sensitive data. If you are reporting a security vulnerability, please follow [SECURITY.md](../../SECURITY.md) instead of opening a public issue.
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug Description
+      description: A clear and concise description of what went wrong.
+      placeholder: Describe the issue you encountered...
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps_to_reproduce
+    attributes:
+      label: Steps to Reproduce
+      description: Exact steps to reproduce the behavior.
+      placeholder: |
+        1. Select a .zip archive in ...
+        2. Choose Hatch Mode / Standard Mode ...
+        3. Tap Extract ...
+        4. Observe error ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected_and_actual
+    attributes:
+      label: Expected vs. Actual Behavior
+      description: What did you expect to happen, and what actually happened instead?
+      placeholder: |
+        Expected: ...
+        Actual: ...
+    validations:
+      required: true
+
+  - type: input
+    id: app_version
+    attributes:
+      label: App Version or Commit
+      description: Which version of KaiHatch or Git commit SHA were you running?
+      placeholder: "e.g., v1.0, debug APK from Actions, or commit SHA"
+    validations:
+      required: true
+
+  - type: input
+    id: device_android
+    attributes:
+      label: Device and Android Version
+      description: Your phone/tablet model and Android OS version.
+      placeholder: "e.g., Google Pixel 8, Android 16"
+    validations:
+      required: true
+
+  - type: input
+    id: archive_details
+    attributes:
+      label: Archive Format and Approximate Size
+      description: Format (.zip, .7z, .apk, .tar.gz, etc.), approximate file size, and whether it contains large DEFLATE/STORED files or encryption.
+      placeholder: "e.g., .zip, ~1.8 GB (multiple MP4 files, unencrypted)"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: extraction_mode
+    attributes:
+      label: Extraction Mode
+      description: Which mode or feature was being used when the bug occurred?
+      options:
+        - Hatch Mode (In-place low-storage extraction)
+        - Standard Mode (Non-destructive extraction)
+        - Pack Studio (Archive creation / compression)
+        - Archive Explorer / Preview
+        - Space Lab (Synthetic benchmark)
+        - Not applicable (UI / Settings / Onboarding)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: data_impact
+    attributes:
+      label: Were Any Files or Archives Modified, Corrupted, or Lost?
+      description: Please indicate whether the source archive or extracted output was affected.
+      options:
+        - No — all files and archives are intact
+        - Yes — source archive was partially truncated or modified (Hatch Mode)
+        - Yes — extracted output files were incomplete or corrupted
+        - Unsure
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs_screenshots
+    attributes:
+      label: Relevant Logs and Screenshots
+      description: Paste any output from the in-app I/O Console, logcat stack traces, or attach screenshots (redact any personal filenames or paths).
+      render: shell
+    validations:
+      required: false

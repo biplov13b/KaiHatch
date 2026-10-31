@@ -1,0 +1,53 @@
+name: Feature Request
+description: Suggest an improvement, new archive capability, or UX enhancement for KaiHatch.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for suggesting an improvement to **KaiHatch**.
+
+  - type: textarea
+    id: feature_description
+    attributes:
+      label: Feature Description
+      description: A clear and concise summary of the feature you would like to see.
+      placeholder: Describe the feature...
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem_solved
+    attributes:
+      label: Problem It Solves
+      description: What limitation, workflow friction, or use case does this address?
+      placeholder: "e.g., When unpacking archives with ..., it is currently difficult to..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposed_behavior
+    attributes:
+      label: Proposed Behavior
+      description: How should the feature work from the user's perspective, and how should it interact with Standard Mode or Hatch Mode?
+      placeholder: Describe how you envision the feature working...
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives Considered
+      description: Any alternative approaches or workarounds you have considered.
+      placeholder: Describe any alternatives or workarounds...
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional_context
+    attributes:
+      label: Additional Context
+      description: Add any other context, technical notes, or mockups about the feature request.
+    validations:
+      required: false

@@ -2,6 +2,10 @@
   <img src="docs/assets/kaihatch-header.svg" alt="KaiHatch — Extract more. Use less space." width="100%" />
 </p>
 
+<p align="center">
+  <img src="docs/assets/kaihatch-app-icon.png" alt="KaiHatch app icon" width="104" />
+</p>
+
 # KaiHatch
 
 **Extract archives on Android without needing twice the free storage.**
