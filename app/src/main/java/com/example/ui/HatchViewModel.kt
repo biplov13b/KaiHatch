@@ -124,6 +124,10 @@ class HatchViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _extractionProgress = MutableStateFlow(ExtractionProgress())
     val extractionProgress: StateFlow<ExtractionProgress> = _extractionProgress.asStateFlow()
+    @Volatile
+    private var lastExtractionUiUpdateNs: Long = 0L
+    @Volatile
+    private var lastCompressionUiUpdateNs: Long = 0L
 
     // Crash-Safe Pending Resume Journals
     private val _pendingResumeStates = MutableStateFlow<List<ResumeJournalState>>(emptyList())
@@ -320,6 +324,7 @@ class HatchViewModel(application: Application) : AndroidViewModel(application) {
 
     companion object {
         const val KEY_ONBOARDING_COMPLETED = "onboarding_completed"
+        const val UI_PROGRESS_MIN_INTERVAL_NS = 8_000_000L
     }
 
     fun onFolderPermissionGranted(treeUri: Uri) {
@@ -858,7 +863,18 @@ class HatchViewModel(application: Application) : AndroidViewModel(application) {
         startTime: Long
     ) {
         val app = getApplication<Application>()
-        _extractionProgress.value = progress
+        val previous = _extractionProgress.value
+        val nowNs = System.nanoTime()
+        val isIntermediateByteTickOnly =
+            (progress.status == ExtractionStatus.EXTRACTING || progress.status == ExtractionStatus.TRUNCATING) &&
+                progress.status == previous.status &&
+                progress.completedEntries == previous.completedEntries &&
+                progress.currentFileName == previous.currentFileName &&
+                progress.journalLogs.size == previous.journalLogs.size
+        if (!isIntermediateByteTickOnly || (nowNs - lastExtractionUiUpdateNs) >= UI_PROGRESS_MIN_INTERVAL_NS) {
+            lastExtractionUiUpdateNs = nowNs
+            _extractionProgress.value = progress
+        }
         ArchiveJobRunner.updateExtractionProgress(progress)
 
         when (progress.status) {
@@ -1170,7 +1186,17 @@ class HatchViewModel(application: Application) : AndroidViewModel(application) {
             HatchCompressEngine.compressFiles(items, targetArchive, settings.copy(archiveName = safeName)).collect { progress ->
                 when (progress.status) {
                     CompressionStatus.PREPARING, CompressionStatus.COMPRESSING -> {
-                        _compressionProgress.value = progress
+                        val previous = _compressionProgress.value
+                        val nowNs = System.nanoTime()
+                        val isIntermediateByteTickOnly =
+                            progress.status == CompressionStatus.COMPRESSING &&
+                                progress.status == previous.status &&
+                                progress.currentFileIndex == previous.currentFileIndex &&
+                                progress.currentFileName == previous.currentFileName
+                        if (!isIntermediateByteTickOnly || (nowNs - lastCompressionUiUpdateNs) >= UI_PROGRESS_MIN_INTERVAL_NS) {
+                            lastCompressionUiUpdateNs = nowNs
+                            _compressionProgress.value = progress
+                        }
                         ArchiveJobRunner.updateCompressionProgress(progress)
 
                         if (!HatchNotificationHelper.shouldDispatchLiveUpdate()) return@collect

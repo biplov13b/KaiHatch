@@ -194,7 +194,6 @@ class MainActivity : ComponentActivity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             window.isNavigationBarContrastEnforced = false
         }
-        requestHighRefreshRate120Hz()
         super.onCreate(savedInstanceState)
 
         extractUriFromIntent(intent)?.let { pendingIncomingUri = it }
@@ -236,33 +235,6 @@ class MainActivity : ComponentActivity() {
                 }
                 KaiHatchApp(viewModel = hatchViewModel)
             }
-        }
-    }
-
-    /**
-     * Requests the highest available display refresh rate (e.g. 120Hz / 144Hz) from the WindowManager
-     * so devices that throttle standard apps to 60Hz unlock full 120fps frame pacing.
-     */
-    private fun requestHighRefreshRate120Hz() {
-        try {
-            val display = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                this.display
-            } else {
-                @Suppress("DEPRECATION")
-                windowManager.defaultDisplay
-            } ?: return
-
-            val supportedModes = display.supportedModes
-            val highestMode = supportedModes.maxByOrNull { it.refreshRate }
-            val params = window.attributes
-            if (highestMode != null && highestMode.refreshRate >= 90f) {
-                params.preferredDisplayModeId = highestMode.modeId
-                params.preferredRefreshRate = highestMode.refreshRate
-            } else {
-                params.preferredRefreshRate = 120f
-            }
-            window.attributes = params
-        } catch (_: Throwable) {
         }
     }
 

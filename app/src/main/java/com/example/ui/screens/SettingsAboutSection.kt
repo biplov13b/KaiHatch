@@ -36,7 +36,6 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.Code
-import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.outlined.Email
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -352,147 +351,70 @@ fun SettingsAboutCard(
 
         Spacer(modifier = Modifier.height(20.dp))
 
-        // Three equally sized contact buttons arranged horizontally where screen width permits
-        BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
-            val isCompactWidth = maxWidth < 290.dp
-            if (isCompactWidth) {
-                Column(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    AboutContactTile(
-                        title = "Website",
-                        subtitle = "GitHub Repository",
-                        backgroundColor = contactTileBg,
-                        borderColor = contactTileBorder,
-                        contentDescriptionText = "Website: GitHub Repository",
-                        testTag = "about_contact_website_button",
-                        onClick = {
-                            HapticUtil.performUIHaptic(view)
-                            openExternalUrl(context, ABOUT_WEBSITE_URL)
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Language,
-                            contentDescription = null,
-                            tint = primary,
-                            modifier = Modifier.size(24.dp)
-                        )
-                    }
-                    AboutContactTile(
-                        title = "Email",
-                        subtitle = "Get in touch",
-                        backgroundColor = contactTileBg,
-                        borderColor = contactTileBorder,
-                        contentDescriptionText = "Email: Get in touch",
-                        testTag = "about_contact_email_button",
-                        onClick = {
-                            HapticUtil.performUIHaptic(view)
-                            openEmailContact(context, ABOUT_EMAIL_ADDRESS)
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        Icon(
-                            imageVector = Icons.Outlined.Email,
-                            contentDescription = null,
-                            tint = primary,
-                            modifier = Modifier.size(24.dp)
-                        )
-                    }
-                    AboutContactTile(
-                        title = "Telegram",
-                        subtitle = "Join the channel",
-                        backgroundColor = contactTileBg,
-                        borderColor = contactTileBorder,
-                        contentDescriptionText = "Telegram: Join the channel",
-                        testTag = "about_contact_telegram_button",
-                        onClick = {
-                            HapticUtil.performUIHaptic(view)
-                            openExternalUrl(context, ABOUT_TELEGRAM_URL)
-                        },
-                        modifier = Modifier.fillMaxWidth()
-                    ) {
-                        TelegramPaperPlaneIcon(
-                            color = primary,
-                            modifier = Modifier.size(24.dp)
-                        )
-                    }
-                }
-            } else {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    AboutContactTile(
-                        title = "Website",
-                        subtitle = "GitHub Repository",
-                        backgroundColor = contactTileBg,
-                        borderColor = contactTileBorder,
-                        contentDescriptionText = "Website: GitHub Repository",
-                        testTag = "about_contact_website_button",
-                        onClick = {
-                            HapticUtil.performUIHaptic(view)
-                            openExternalUrl(context, ABOUT_WEBSITE_URL)
-                        },
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Language,
-                            contentDescription = null,
-                            tint = primary,
-                            modifier = Modifier.size(24.dp)
-                        )
-                    }
+        // Three horizontally aligned, equally sized icon-only contact buttons
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            AboutContactIconButton(
+                backgroundColor = contactTileBg,
+                borderColor = contactTileBorder,
+                contentDescriptionText = "GitHub Repository",
+                testTag = "about_contact_website_button",
+                onClick = {
+                    HapticUtil.performUIHaptic(view)
+                    openExternalUrl(context, ABOUT_WEBSITE_URL)
+                },
+                modifier = Modifier.weight(1f)
+            ) {
+                GitHubMarkIcon(
+                    color = primary,
+                    modifier = Modifier.size(24.dp)
+                )
+            }
 
-                    AboutContactTile(
-                        title = "Email",
-                        subtitle = "Get in touch",
-                        backgroundColor = contactTileBg,
-                        borderColor = contactTileBorder,
-                        contentDescriptionText = "Email: Get in touch",
-                        testTag = "about_contact_email_button",
-                        onClick = {
-                            HapticUtil.performUIHaptic(view)
-                            openEmailContact(context, ABOUT_EMAIL_ADDRESS)
-                        },
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        Icon(
-                            imageVector = Icons.Outlined.Email,
-                            contentDescription = null,
-                            tint = primary,
-                            modifier = Modifier.size(24.dp)
-                        )
-                    }
+            AboutContactIconButton(
+                backgroundColor = contactTileBg,
+                borderColor = contactTileBorder,
+                contentDescriptionText = "Email",
+                testTag = "about_contact_email_button",
+                onClick = {
+                    HapticUtil.performUIHaptic(view)
+                    openEmailContact(context, ABOUT_EMAIL_ADDRESS)
+                },
+                modifier = Modifier.weight(1f)
+            ) {
+                Icon(
+                    imageVector = Icons.Outlined.Email,
+                    contentDescription = null,
+                    tint = primary,
+                    modifier = Modifier.size(24.dp)
+                )
+            }
 
-                    AboutContactTile(
-                        title = "Telegram",
-                        subtitle = "Join the channel",
-                        backgroundColor = contactTileBg,
-                        borderColor = contactTileBorder,
-                        contentDescriptionText = "Telegram: Join the channel",
-                        testTag = "about_contact_telegram_button",
-                        onClick = {
-                            HapticUtil.performUIHaptic(view)
-                            openExternalUrl(context, ABOUT_TELEGRAM_URL)
-                        },
-                        modifier = Modifier.weight(1f)
-                    ) {
-                        TelegramPaperPlaneIcon(
-                            color = primary,
-                            modifier = Modifier.size(24.dp)
-                        )
-                    }
-                }
+            AboutContactIconButton(
+                backgroundColor = contactTileBg,
+                borderColor = contactTileBorder,
+                contentDescriptionText = "Telegram",
+                testTag = "about_contact_telegram_button",
+                onClick = {
+                    HapticUtil.performUIHaptic(view)
+                    openExternalUrl(context, ABOUT_TELEGRAM_URL)
+                },
+                modifier = Modifier.weight(1f)
+            ) {
+                TelegramPaperPlaneIcon(
+                    color = primary,
+                    modifier = Modifier.size(24.dp)
+                )
             }
         }
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        // Support Development Button (Ko-fi)
-        Row(
+        // Support Development Button (Ko-fi) — text centered across full button width independently of side icons
+        Box(
             modifier = Modifier
                 .fillMaxWidth()
                 .heightIn(min = 64.dp)
@@ -508,45 +430,49 @@ fun SettingsAboutCard(
                     contentDescription = "Support Development: Buy me a coffee on Ko-fi"
                 }
                 .padding(horizontal = 16.dp, vertical = 12.dp)
-                .testTag("about_support_development_button"),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
+                .testTag("about_support_development_button")
         ) {
-            Spacer(modifier = Modifier.width(18.dp))
+            KofiCoffeeCupIcon(
+                cupColor = onSurface,
+                heartColor = Color(0xFFFB7185),
+                modifier = Modifier
+                    .size(28.dp)
+                    .align(Alignment.CenterStart)
+            )
 
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.Center,
-                modifier = Modifier.weight(1f)
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 36.dp)
+                    .align(Alignment.Center),
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                KofiCoffeeCupIcon(
-                    cupColor = onSurface,
-                    heartColor = Color(0xFFFB7185),
-                    modifier = Modifier.size(28.dp)
+                Text(
+                    text = "Support Development",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = onSurface,
+                    textAlign = TextAlign.Center,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
                 )
-
-                Spacer(modifier = Modifier.width(12.dp))
-
-                Column {
-                    Text(
-                        text = "Support Development",
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.Bold,
-                        color = onSurface
-                    )
-                    Text(
-                        text = "Buy me a coffee on Ko-fi",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = onSurfaceVariant
-                    )
-                }
+                Text(
+                    text = "Buy me a coffee on Ko-fi",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
             }
 
             Icon(
                 imageVector = Icons.AutoMirrored.Filled.OpenInNew,
                 contentDescription = "Opens in browser",
                 tint = onSurfaceVariant,
-                modifier = Modifier.size(18.dp)
+                modifier = Modifier
+                    .size(18.dp)
+                    .align(Alignment.CenterEnd)
             )
         }
 
@@ -654,9 +580,7 @@ internal fun KaiHatchAppLogoBadge(
 }
 
 @Composable
-private fun AboutContactTile(
-    title: String,
-    subtitle: String,
+private fun AboutContactIconButton(
     backgroundColor: Color,
     borderColor: Color,
     contentDescriptionText: String,
@@ -665,9 +589,9 @@ private fun AboutContactTile(
     modifier: Modifier = Modifier,
     icon: @Composable () -> Unit
 ) {
-    Column(
+    Box(
         modifier = modifier
-            .heightIn(min = 88.dp)
+            .height(56.dp)
             .clip(ContactButtonShape)
             .background(backgroundColor, ContactButtonShape)
             .border(1.dp, borderColor, ContactButtonShape)
@@ -676,35 +600,55 @@ private fun AboutContactTile(
                 role = Role.Button
                 contentDescription = contentDescriptionText
             }
-            .padding(horizontal = 8.dp, vertical = 14.dp)
             .testTag(testTag),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
+        contentAlignment = Alignment.Center
     ) {
         icon()
+    }
+}
 
-        Spacer(modifier = Modifier.height(8.dp))
+@Composable
+private fun GitHubMarkIcon(
+    color: Color,
+    modifier: Modifier = Modifier
+) {
+    Canvas(modifier = modifier) {
+        val sx = size.width / 24f
+        val sy = size.height / 24f
 
-        Text(
-            text = title,
-            style = MaterialTheme.typography.titleSmall,
-            fontWeight = FontWeight.Bold,
-            color = MaterialTheme.colorScheme.onSurface,
-            textAlign = TextAlign.Center,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
+        val githubPath = Path().apply {
+            moveTo(12f * sx, 2f * sy)
+            cubicTo(6.477f * sx, 2f * sy, 2f * sx, 6.484f * sy, 2f * sx, 12.017f * sy)
+            cubicTo(2f * sx, 16.442f * sy, 4.865f * sx, 20.197f * sy, 8.839f * sx, 21.522f * sy)
+            cubicTo(9.339f * sx, 21.614f * sy, 9.521f * sx, 21.305f * sy, 9.521f * sx, 21.041f * sy)
+            cubicTo(9.521f * sx, 20.805f * sy, 9.512f * sx, 20.024f * sy, 9.508f * sx, 19.167f * sy)
+            cubicTo(6.726f * sx, 19.771f * sy, 6.139f * sx, 17.988f * sy, 6.139f * sx, 17.988f * sy)
+            cubicTo(5.684f * sx, 16.832f * sy, 5.029f * sx, 16.524f * sy, 5.029f * sx, 16.524f * sy)
+            cubicTo(4.121f * sx, 15.903f * sy, 5.098f * sx, 15.915f * sy, 5.098f * sx, 15.915f * sy)
+            cubicTo(6.101f * sx, 15.986f * sy, 6.629f * sx, 16.946f * sy, 6.629f * sx, 16.946f * sy)
+            cubicTo(7.521f * sx, 18.474f * sy, 8.969f * sx, 18.032f * sy, 9.54f * sx, 17.777f * sy)
+            cubicTo(9.631f * sx, 17.13f * sy, 9.889f * sx, 16.688f * sy, 10.175f * sx, 16.438f * sy)
+            cubicTo(7.955f * sx, 16.185f * sy, 5.62f * sx, 15.327f * sy, 5.62f * sx, 11.493f * sy)
+            cubicTo(5.62f * sx, 10.4f * sy, 6.01f * sx, 9.507f * sy, 6.649f * sx, 8.807f * sy)
+            cubicTo(6.546f * sx, 8.554f * sy, 6.203f * sx, 7.535f * sy, 6.747f * sx, 6.157f * sy)
+            cubicTo(6.747f * sx, 6.157f * sy, 7.586f * sx, 5.888f * sy, 9.497f * sx, 7.184f * sy)
+            cubicTo(10.295f * sx, 6.962f * sy, 11.15f * sx, 6.851f * sy, 12f * sx, 6.847f * sy)
+            cubicTo(12.85f * sx, 6.851f * sy, 13.705f * sx, 6.962f * sy, 14.505f * sx, 7.184f * sy)
+            cubicTo(16.414f * sx, 5.888f * sy, 17.251f * sx, 6.157f * sy, 17.251f * sx, 6.157f * sy)
+            cubicTo(17.797f * sx, 7.535f * sy, 17.454f * sx, 8.554f * sy, 17.351f * sx, 8.807f * sy)
+            cubicTo(17.991f * sx, 9.507f * sy, 18.38f * sx, 10.4f * sy, 18.38f * sx, 11.493f * sy)
+            cubicTo(18.38f * sx, 15.337f * sy, 16.041f * sx, 16.182f * sy, 13.813f * sx, 16.43f * sy)
+            cubicTo(14.172f * sx, 16.741f * sy, 14.492f * sx, 17.353f * sy, 14.492f * sx, 18.29f * sy)
+            cubicTo(14.492f * sx, 19.633f * sy, 14.48f * sx, 20.716f * sy, 14.48f * sx, 21.041f * sy)
+            cubicTo(14.48f * sx, 21.309f * sy, 14.66f * sx, 21.62f * sy, 15.167f * sx, 21.52f * sy)
+            cubicTo(19.138f * sx, 20.192f * sy, 22f * sx, 16.44f * sy, 22f * sx, 12.017f * sy)
+            cubicTo(22f * sx, 6.484f * sy, 17.522f * sx, 2f * sy, 12f * sx, 2f * sy)
+            close()
+        }
 
-        Spacer(modifier = Modifier.height(2.dp))
-
-        Text(
-            text = subtitle,
-            style = MaterialTheme.typography.labelSmall,
-            fontSize = 11.sp,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            textAlign = TextAlign.Center,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
+        drawPath(
+            path = githubPath,
+            color = color
         )
     }
 }
