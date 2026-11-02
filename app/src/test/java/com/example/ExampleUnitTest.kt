@@ -189,4 +189,98 @@ class ExampleUnitTest {
         assertNotNull(singleExtracted)
         assertEquals("Previewable text inside ZIP", singleExtracted!!.readText())
     }
+
+    @Test
+    fun testExtractedFolderAutoExpansionTargetsExactOutputFolder() = runBlocking {
+        val root = tempFolder.newFolder("extracted_folder_selection_test")
+
+        // 1. Existing folder: Demo_Archive_extracted
+        val demoDir = File(root, "Demo_Archive_extracted").apply { mkdirs() }
+        File(demoDir, "demo.txt").writeText("Previously extracted demo archive")
+
+        // Similar folder name: A (1)_extracted
+        val similarDir = File(root, "A (1)_extracted").apply { mkdirs() }
+        File(similarDir, "a1.txt").writeText("Previously extracted A (1)")
+
+        // Newly extracted archive: A (10).zip -> A (10)_extracted
+        val a10Zip = File(root, "A (10).zip")
+        ZipOutputStream(FileOutputStream(a10Zip)).use { zos ->
+            zos.putNextEntry(ZipEntry("inside_a10.txt"))
+            zos.write("Unpacked from A (10).zip".toByteArray())
+            zos.closeEntry()
+        }
+
+        val a10Dir = File(root, "A (10)_extracted")
+        val progressList = KaiHatchEngine.extractArchive(
+            archiveFile = a10Zip,
+            targetDir = a10Dir,
+            isHatchMode = false
+        ).toList()
+        val finalProgress = progressList.last()
+        assertEquals(ExtractionStatus.COMPLETED, finalProgress.status)
+        assertTrue(File(a10Dir, "inside_a10.txt").exists())
+
+        val demoEntry = com.example.data.ExtractedFolderEntry(
+            id = "primary:Download/Demo_Archive_extracted",
+            name = "Demo_Archive_extracted",
+            isSaf = true,
+            localFile = demoDir,
+            totalSizeBytes = 33L
+        )
+        val similarEntry = com.example.data.ExtractedFolderEntry(
+            id = "primary:Download/A (1)_extracted",
+            name = "A (1)_extracted",
+            isSaf = true,
+            localFile = similarDir,
+            totalSizeBytes = 25L
+        )
+        val a10Entry = com.example.data.ExtractedFolderEntry(
+            id = "primary:Download/A (10)_extracted",
+            name = "A (10)_extracted",
+            isSaf = true,
+            localFile = a10Dir,
+            totalSizeBytes = 24L
+        )
+
+        val completedTarget = com.example.ui.CompletedExtractionTarget(
+            completionId = 2L,
+            folderDocumentId = "primary:Download/A (10)_extracted",
+            canonicalDirPath = a10Dir.canonicalPath,
+            absoluteDirPath = a10Dir.absolutePath,
+            outputDirectory = finalProgress.outputDirectory,
+            folderName = a10Dir.name
+        )
+
+        // 2. Before folder-list refresh completes (when only Demo_Archive_extracted and A (1)_extracted are present):
+        // Must return null and NEVER fall back to Demo_Archive_extracted (firstOrNull).
+        val beforeRefresh = com.example.ui.screens.resolveTargetExtractedFolder(
+            extractedFolders = listOf(demoEntry, similarEntry),
+            completedTarget = completedTarget,
+            fallbackOutputDirectory = finalProgress.outputDirectory
+        )
+        org.junit.Assert.assertNull(beforeRefresh)
+
+        // 3. After folder-list refresh completes across all list positions (first, middle, last):
+        val listOrderings = listOf(
+            listOf(demoEntry, a10Entry),                 // Exact bug report scenario: Demo first, A (10) second
+            listOf(demoEntry, a10Entry, similarEntry),   // Target in middle
+            listOf(demoEntry, similarEntry, a10Entry),   // Target last
+            listOf(a10Entry, demoEntry, similarEntry)    // Target first
+        )
+
+        for (folders in listOrderings) {
+            val matched = com.example.ui.screens.resolveTargetExtractedFolder(
+                extractedFolders = folders,
+                completedTarget = completedTarget,
+                fallbackOutputDirectory = finalProgress.outputDirectory
+            )
+            assertNotNull(matched)
+            assertEquals("primary:Download/A (10)_extracted", matched!!.id)
+            assertEquals("A (10)_extracted", matched.name)
+
+            assertTrue(com.example.ui.screens.isExtractedFolderExpanded(a10Entry, matched.id, folders))
+            assertEquals(false, com.example.ui.screens.isExtractedFolderExpanded(demoEntry, matched.id, folders))
+            assertEquals(false, com.example.ui.screens.isExtractedFolderExpanded(similarEntry, matched.id, folders))
+        }
+    }
 }

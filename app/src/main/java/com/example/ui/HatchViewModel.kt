@@ -41,7 +41,21 @@ import java.io.File
 import java.io.FileOutputStream
 import java.util.UUID
 
+import android.provider.DocumentsContract
+import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.Stable
+import java.util.concurrent.atomic.AtomicLong
+
+@Immutable
+data class CompletedExtractionTarget(
+    val completionId: Long,
+    val folderDocUriString: String? = null,
+    val folderDocumentId: String? = null,
+    val canonicalDirPath: String? = null,
+    val absoluteDirPath: String? = null,
+    val outputDirectory: String? = null,
+    val folderName: String = ""
+)
 
 enum class ScreenTab {
     EXTRACT,
@@ -182,6 +196,10 @@ class HatchViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _extractedFolders = MutableStateFlow<List<ExtractedFolderEntry>>(emptyList())
     val extractedFolders: StateFlow<List<ExtractedFolderEntry>> = _extractedFolders.asStateFlow()
+
+    private val extractionCompletionCounter = AtomicLong(0L)
+    private val _lastCompletedTarget = MutableStateFlow<CompletedExtractionTarget?>(null)
+    val lastCompletedTarget: StateFlow<CompletedExtractionTarget?> = _lastCompletedTarget.asStateFlow()
 
     // Precomputed file & folder byte sizes cached off the main thread to prevent UI jank on tab switches
     private val _fileSizesCache = MutableStateFlow<Map<String, Long>>(emptyMap())
@@ -407,71 +425,75 @@ class HatchViewModel(application: Application) : AndroidViewModel(application) {
 
     fun refreshLocalFiles() {
         viewModelScope.launch(Dispatchers.IO) {
-            val app = getApplication<Application>()
-            val archivesDir = StorageHelper.getArchivesDir(app)
-            val sampleDir = StorageHelper.getSampleArchivesDir(app)
-
-            val validExts = listOf("zip", "7z", "rar", "apk", "xapk", "apks", "jar", "tar", "gz", "tgz", "001")
-            val seenPaths = mutableSetOf<String>()
-            val list = mutableListOf<File>()
-
-            fun addUniqueArchive(file: File) {
-                val key = try { file.canonicalPath } catch (_: Throwable) { file.absolutePath }
-                if (seenPaths.add(key)) {
-                    list.add(file)
-                }
-            }
-
-            if (_grantedFolder.value != null) {
-                try {
-                    val treeUri = Uri.parse(_grantedFolder.value!!.uriString)
-                    StorageHelper.listSafArchivesInGrantedFolder(treeUri).forEach { addUniqueArchive(it) }
-                } catch (_: Throwable) {
-                }
-            }
-            archivesDir.listFiles()?.filter {
-                it.isFile && (it.extension.lowercase() in validExts || it.name.endsWith(".tar.gz", true))
-            }?.forEach { addUniqueArchive(it) }
-            sampleDir.listFiles()?.filter {
-                it.isFile && (it.extension.lowercase() in validExts || it.name.endsWith(".tar.gz", true))
-            }?.forEach { addUniqueArchive(it) }
-
-            val sortedArchives = list.sortedByDescending { it.lastModified() }
-
-            val safFolders = if (_grantedFolder.value != null) {
-                try {
-                    val treeUri = Uri.parse(_grantedFolder.value!!.uriString)
-                    StorageHelper.listSafExtractedFolders(app, treeUri)
-                } catch (_: Throwable) {
-                    emptyList()
-                }
-            } else emptyList()
-
-            val localFolders = StorageHelper.listLocalExtractedFolders(app)
-            val safNames = safFolders.map { it.name.lowercase() }.toSet()
-            val allFolders = safFolders + localFolders.filter { it.name.lowercase() !in safNames }
-
-            val updatedSizes = _fileSizesCache.value.toMutableMap()
-            for (archive in sortedArchives) {
-                updatedSizes[archive.absolutePath] = archive.length()
-            }
-            for (folder in allFolders) {
-                updatedSizes[folder.id] = folder.totalSizeBytes
-            }
-            for (queued in _itemsToCompress.value) {
-                if (!updatedSizes.containsKey(queued.absolutePath)) {
-                    updatedSizes[queued.absolutePath] = if (queued.isDirectory) {
-                        StorageHelper.getDirectorySize(queued)
-                    } else {
-                        queued.length()
-                    }
-                }
-            }
-
-            _fileSizesCache.value = updatedSizes
-            _availableArchives.value = sortedArchives
-            _extractedFolders.value = allFolders
+            refreshLocalFilesInternal()
         }
+    }
+
+    private suspend fun refreshLocalFilesInternal() = withContext(Dispatchers.IO) {
+        val app = getApplication<Application>()
+        val archivesDir = StorageHelper.getArchivesDir(app)
+        val sampleDir = StorageHelper.getSampleArchivesDir(app)
+
+        val validExts = listOf("zip", "7z", "rar", "apk", "xapk", "apks", "jar", "tar", "gz", "tgz", "001")
+        val seenPaths = mutableSetOf<String>()
+        val list = mutableListOf<File>()
+
+        fun addUniqueArchive(file: File) {
+            val key = try { file.canonicalPath } catch (_: Throwable) { file.absolutePath }
+            if (seenPaths.add(key)) {
+                list.add(file)
+            }
+        }
+
+        if (_grantedFolder.value != null) {
+            try {
+                val treeUri = Uri.parse(_grantedFolder.value!!.uriString)
+                StorageHelper.listSafArchivesInGrantedFolder(treeUri).forEach { addUniqueArchive(it) }
+            } catch (_: Throwable) {
+            }
+        }
+        archivesDir.listFiles()?.filter {
+            it.isFile && (it.extension.lowercase() in validExts || it.name.endsWith(".tar.gz", true))
+        }?.forEach { addUniqueArchive(it) }
+        sampleDir.listFiles()?.filter {
+            it.isFile && (it.extension.lowercase() in validExts || it.name.endsWith(".tar.gz", true))
+        }?.forEach { addUniqueArchive(it) }
+
+        val sortedArchives = list.sortedByDescending { it.lastModified() }
+
+        val safFolders = if (_grantedFolder.value != null) {
+            try {
+                val treeUri = Uri.parse(_grantedFolder.value!!.uriString)
+                StorageHelper.listSafExtractedFolders(app, treeUri)
+            } catch (_: Throwable) {
+                emptyList()
+            }
+        } else emptyList()
+
+        val localFolders = StorageHelper.listLocalExtractedFolders(app)
+        val safNames = safFolders.map { it.name.lowercase() }.toSet()
+        val allFolders = safFolders + localFolders.filter { it.name.lowercase() !in safNames }
+
+        val updatedSizes = _fileSizesCache.value.toMutableMap()
+        for (archive in sortedArchives) {
+            updatedSizes[archive.absolutePath] = archive.length()
+        }
+        for (folder in allFolders) {
+            updatedSizes[folder.id] = folder.totalSizeBytes
+        }
+        for (queued in _itemsToCompress.value) {
+            if (!updatedSizes.containsKey(queued.absolutePath)) {
+                updatedSizes[queued.absolutePath] = if (queued.isDirectory) {
+                    StorageHelper.getDirectorySize(queued)
+                } else {
+                    queued.length()
+                }
+            }
+        }
+
+        _fileSizesCache.value = updatedSizes
+        _availableArchives.value = sortedArchives
+        _extractedFolders.value = allFolders
     }
 
     fun deleteArchive(file: File) {
@@ -752,6 +774,7 @@ class HatchViewModel(application: Application) : AndroidViewModel(application) {
         val pass = _archivePassword.value.ifEmpty { null }
 
         // Immediately reflect active state so UI never lags while resolving SAF directories
+        _lastCompletedTarget.value = null
         _extractionProgress.value = ExtractionProgress(
             archiveName = summary.fileName,
             isHatchMode = hatchMode,
@@ -820,6 +843,7 @@ class HatchViewModel(application: Application) : AndroidViewModel(application) {
                     progress = progress,
                     archiveName = summary.fileName,
                     targetDir = targetDir,
+                    targetFolderDocUri = targetFolderDocUri,
                     originalArchiveSize = originalArchiveSize,
                     hatchMode = hatchMode,
                     startTime = startTime
@@ -833,6 +857,7 @@ class HatchViewModel(application: Application) : AndroidViewModel(application) {
         val startTime = System.currentTimeMillis()
         val pass = _archivePassword.value.ifEmpty { resumeState.password }
 
+        _lastCompletedTarget.value = null
         extractJob?.cancel()
         val remainingCount = resumeState.remainingEntries.size
         val resumeLabel = if (remainingCount == 1) "1 file" else "$remainingCount files"
@@ -841,11 +866,20 @@ class HatchViewModel(application: Application) : AndroidViewModel(application) {
             title = "Extracting $resumeLabel",
             subtitle = resumeState.archiveName
         ) {
+            val resumeTargetDir = File(resumeState.targetDirPath)
+            val resumeTreeUri = _grantedFolder.value?.let { Uri.parse(it.uriString) }
+            val resumeFolderDocUri = if (resumeTreeUri != null && resumeTargetDir.name.endsWith("_extracted")) {
+                runCatching {
+                    StorageHelper.getOrCreateDocumentSubfolder(app, resumeTreeUri, resumeTargetDir.name)
+                }.getOrNull()
+            } else null
+
             KaiHatchEngine.resumeInterruptedExtraction(app, resumeState, pass).collect { progress ->
                 handleExtractionProgressUpdate(
                     progress = progress,
                     archiveName = resumeState.archiveName,
-                    targetDir = File(resumeState.targetDirPath),
+                    targetDir = resumeTargetDir,
+                    targetFolderDocUri = resumeFolderDocUri,
                     originalArchiveSize = resumeState.originalArchiveBytes,
                     hatchMode = true,
                     startTime = startTime
@@ -854,10 +888,11 @@ class HatchViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun handleExtractionProgressUpdate(
+    private suspend fun handleExtractionProgressUpdate(
         progress: ExtractionProgress,
         archiveName: String,
         targetDir: File,
+        targetFolderDocUri: Uri?,
         originalArchiveSize: Long,
         hatchMode: Boolean,
         startTime: Long
@@ -871,6 +906,26 @@ class HatchViewModel(application: Application) : AndroidViewModel(application) {
                 progress.completedEntries == previous.completedEntries &&
                 progress.currentFileName == previous.currentFileName &&
                 progress.journalLogs.size == previous.journalLogs.size
+
+        if (progress.status == ExtractionStatus.COMPLETED) {
+            val canonicalPath = runCatching { targetDir.canonicalPath }.getOrNull() ?: targetDir.absolutePath
+            val docId = targetFolderDocUri?.let {
+                runCatching { DocumentsContract.getDocumentId(it) }.getOrNull()
+            }
+            _lastCompletedTarget.value = CompletedExtractionTarget(
+                completionId = extractionCompletionCounter.incrementAndGet(),
+                folderDocUriString = targetFolderDocUri?.toString(),
+                folderDocumentId = docId,
+                canonicalDirPath = canonicalPath,
+                absoluteDirPath = targetDir.absolutePath,
+                outputDirectory = progress.outputDirectory,
+                folderName = targetDir.name.ifEmpty { progress.outputDirectory?.substringAfterLast('/') ?: "" }
+            )
+            refreshStorage()
+            refreshLocalFilesInternal()
+            refreshPendingResumeStates()
+        }
+
         if (!isIntermediateByteTickOnly || (nowNs - lastExtractionUiUpdateNs) >= UI_PROGRESS_MIN_INTERVAL_NS) {
             lastExtractionUiUpdateNs = nowNs
             _extractionProgress.value = progress
@@ -910,9 +965,6 @@ class HatchViewModel(application: Application) : AndroidViewModel(application) {
             }
 
             ExtractionStatus.COMPLETED -> {
-                refreshStorage()
-                refreshLocalFiles()
-                refreshPendingResumeStates()
                 if (progress.isHatchMode) {
                     _selectedArchiveFile.value = null
                     _selectedSafUri.value = null

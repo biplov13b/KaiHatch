@@ -739,6 +739,171 @@ class ExampleRobolectricTest {
         assertTrue(notices.any { it.name == "XZ for Java" && it.license.contains("0BSD") })
         assertTrue(notices.any { it.name == "AndroidX Jetpack Compose" && it.version == "2026.03.00" })
     }
+
+    @Test
+    fun `test extracted folder auto-expansion targets exact completed folder and never falls back to first folder`() = runBlocking {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val extractedRoot = StorageHelper.getExtractedDir(app)
+        extractedRoot.deleteRecursively()
+        extractedRoot.mkdirs()
+
+        // 1. Pre-existing extracted folder: Demo_Archive_extracted
+        val demoDir = File(extractedRoot, "Demo_Archive_extracted").apply { mkdirs() }
+        File(demoDir, "demo_readme.txt").writeText("Previously extracted demo content")
+
+        // Similar-name folder to test disambiguation: A (1)_extracted
+        val similarDir = File(extractedRoot, "A (1)_extracted").apply { mkdirs() }
+        File(similarDir, "other.txt").writeText("Other archive content")
+
+        // Target newly extracted folder: A (10)_extracted
+        val a10Dir = File(extractedRoot, "A (10)_extracted")
+
+        val demoEntry = com.example.data.ExtractedFolderEntry(
+            id = "primary:Download/Demo_Archive_extracted",
+            name = "Demo_Archive_extracted",
+            isSaf = true,
+            localFile = demoDir,
+            safUri = Uri.parse("content://com.android.externalstorage.documents/tree/primary%3ADownload/document/primary%3ADownload%2FDemo_Archive_extracted"),
+            totalSizeBytes = 33L,
+            children = listOf(
+                com.example.data.ExtractedFileEntry(
+                    id = "primary:Download/Demo_Archive_extracted/demo_readme.txt",
+                    name = "demo_readme.txt",
+                    sizeBytes = 33L,
+                    mimeType = "text/plain",
+                    localFile = File(demoDir, "demo_readme.txt"),
+                    isSaf = true
+                )
+            )
+        )
+
+        val similarEntry = com.example.data.ExtractedFolderEntry(
+            id = "primary:Download/A (1)_extracted",
+            name = "A (1)_extracted",
+            isSaf = true,
+            localFile = similarDir,
+            safUri = Uri.parse("content://com.android.externalstorage.documents/tree/primary%3ADownload/document/primary%3ADownload%2FA%20(1)_extracted"),
+            totalSizeBytes = 21L,
+            children = emptyList()
+        )
+
+        val a10DocUri = Uri.parse("content://com.android.externalstorage.documents/tree/primary%3ADownload/document/primary%3ADownload%2FA%20(10)_extracted")
+        val a10Target = com.example.ui.CompletedExtractionTarget(
+            completionId = 1L,
+            folderDocUriString = a10DocUri.toString(),
+            folderDocumentId = "primary:Download/A (10)_extracted",
+            canonicalDirPath = a10Dir.canonicalPath,
+            absoluteDirPath = a10Dir.absolutePath,
+            outputDirectory = "Download/A (10)_extracted",
+            folderName = "A (10)_extracted"
+        )
+
+        // 2. Simulate pre-refresh race window where only Demo_Archive_extracted is in the list:
+        // Must return null and NEVER fall back to Demo_Archive_extracted (firstOrNull).
+        val preRefreshMatch = com.example.ui.screens.resolveTargetExtractedFolder(
+            extractedFolders = listOf(demoEntry, similarEntry),
+            completedTarget = a10Target,
+            fallbackOutputDirectory = "Download/A (10)_extracted"
+        )
+        assertNull("Must not fall back to first folder before target folder is in list", preRefreshMatch)
+
+        // 3. Once A (10)_extracted is present (tested at last, middle, and first positions):
+        a10Dir.mkdirs()
+        val a10File = File(a10Dir, "payload_a10.txt").apply { writeText("Unpacked from A (10).zip") }
+        val a10Entry = com.example.data.ExtractedFolderEntry(
+            id = "primary:Download/A (10)_extracted",
+            name = "A (10)_extracted",
+            isSaf = true,
+            localFile = a10Dir,
+            safUri = a10DocUri,
+            totalSizeBytes = a10File.length(),
+            children = listOf(
+                com.example.data.ExtractedFileEntry(
+                    id = "primary:Download/A (10)_extracted/payload_a10.txt",
+                    name = "payload_a10.txt",
+                    sizeBytes = a10File.length(),
+                    mimeType = "text/plain",
+                    localFile = a10File,
+                    isSaf = true
+                )
+            )
+        )
+
+        val orderings = listOf(
+            listOf(demoEntry, a10Entry),                 // Exact reported scenario: Demo first, A (10) second
+            listOf(demoEntry, a10Entry, similarEntry),   // Target in middle
+            listOf(demoEntry, similarEntry, a10Entry),   // Target last
+            listOf(a10Entry, demoEntry, similarEntry)    // Target first
+        )
+
+        for (folders in orderings) {
+            val matched = com.example.ui.screens.resolveTargetExtractedFolder(
+                extractedFolders = folders,
+                completedTarget = a10Target,
+                fallbackOutputDirectory = "Download/A (10)_extracted"
+            )
+            assertNotNull(matched)
+            assertEquals("primary:Download/A (10)_extracted", matched!!.id)
+            assertEquals("A (10)_extracted", matched.name)
+
+            val expandedId = matched.id
+            assertTrue(com.example.ui.screens.isExtractedFolderExpanded(a10Entry, expandedId, folders))
+            assertEquals(false, com.example.ui.screens.isExtractedFolderExpanded(demoEntry, expandedId, folders))
+            assertEquals(false, com.example.ui.screens.isExtractedFolderExpanded(similarEntry, expandedId, folders))
+        }
+
+        // 4. End-to-end ViewModel extraction test for A (10).zip when Demo_Archive_extracted already exists
+        a10Dir.deleteRecursively()
+        val archivesDir = StorageHelper.getArchivesDir(app).apply { mkdirs() }
+        val a10Zip = File(archivesDir, "A (10).zip")
+        ZipOutputStream(FileOutputStream(a10Zip)).use { zos ->
+            zos.putNextEntry(ZipEntry("hello_a10.txt"))
+            zos.write("Hello from A (10).zip!".toByteArray())
+            zos.closeEntry()
+        }
+
+        val viewModel = HatchViewModel(app)
+        viewModel.setHatchMode(false)
+        viewModel.selectArchive(a10Zip)
+
+        // Wait for archive summary inspection to complete on Dispatchers.Main + Dispatchers.IO
+        var waitTicks = 0
+        while (viewModel.archiveSummary.value == null && waitTicks < 100) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            Thread.sleep(20)
+            waitTicks++
+        }
+        org.robolectric.shadows.ShadowLooper.idleMainLooper()
+        assertNotNull(viewModel.archiveSummary.value)
+
+        viewModel.startExtraction(requirePersistentFolder = false)
+
+        waitTicks = 0
+        while (viewModel.extractionProgress.value.status != ExtractionStatus.COMPLETED && waitTicks < 150) {
+            org.robolectric.shadows.ShadowLooper.idleMainLooper()
+            Thread.sleep(20)
+            waitTicks++
+        }
+        org.robolectric.shadows.ShadowLooper.idleMainLooper()
+        assertEquals(ExtractionStatus.COMPLETED, viewModel.extractionProgress.value.status)
+
+        // Verify that at the exact moment COMPLETED is observed, lastCompletedTarget and extractedFolders are already populated
+        val completedTarget = viewModel.lastCompletedTarget.value
+        assertNotNull(completedTarget)
+        assertEquals("A (10)_extracted", completedTarget!!.folderName)
+
+        val currentFolders = viewModel.extractedFolders.value
+        assertTrue(currentFolders.any { it.name == "Demo_Archive_extracted" })
+        assertTrue(currentFolders.any { it.name == "A (10)_extracted" })
+
+        val resolvedAfterExtract = com.example.ui.screens.resolveTargetExtractedFolder(
+            extractedFolders = currentFolders,
+            completedTarget = completedTarget,
+            fallbackOutputDirectory = viewModel.extractionProgress.value.outputDirectory
+        )
+        assertNotNull(resolvedAfterExtract)
+        assertEquals("A (10)_extracted", resolvedAfterExtract!!.name)
+    }
 }
 
 

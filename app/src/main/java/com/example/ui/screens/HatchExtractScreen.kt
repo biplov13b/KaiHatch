@@ -95,16 +95,23 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -120,6 +127,7 @@ import com.example.data.FilePreviewData
 import com.example.data.StorageHelper
 import com.example.engine.ZipParser
 import com.example.model.ExtractionStatus
+import com.example.ui.CompletedExtractionTarget
 import com.example.ui.HatchViewModel
 import com.example.ui.ScreenTab
 import com.example.ui.components.ArchivePreviewerDialog
@@ -137,8 +145,127 @@ import com.example.ui.components.StorageGauge
 import com.example.ui.components.groupPositionFor
 import com.example.ui.theme.JetBrainsMonoFontFamily
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
+import kotlin.math.roundToInt
+
+/**
+ * Resolves the exact [ExtractedFolderEntry] associated with a completed extraction operation.
+ *
+ * Prioritizes canonical SAF document URIs / IDs and canonical local filesystem paths before
+ * falling back to exact folder identity. Never falls back to `extractedFolders.firstOrNull()`,
+ * returning `null` if the target output folder is not yet present in [extractedFolders].
+ */
+internal fun resolveTargetExtractedFolder(
+    extractedFolders: List<ExtractedFolderEntry>,
+    completedTarget: CompletedExtractionTarget?,
+    fallbackOutputDirectory: String? = null
+): ExtractedFolderEntry? {
+    if (extractedFolders.isEmpty()) return null
+
+    if (completedTarget != null) {
+        if (!completedTarget.folderDocUriString.isNullOrEmpty() || !completedTarget.folderDocumentId.isNullOrEmpty()) {
+            val bySaf = extractedFolders.firstOrNull { folder ->
+                (!completedTarget.folderDocUriString.isNullOrEmpty() &&
+                    folder.safUri?.toString() == completedTarget.folderDocUriString) ||
+                    (!completedTarget.folderDocumentId.isNullOrEmpty() &&
+                        folder.id == completedTarget.folderDocumentId)
+            }
+            if (bySaf != null) return bySaf
+        }
+
+        if (!completedTarget.canonicalDirPath.isNullOrEmpty() || !completedTarget.absoluteDirPath.isNullOrEmpty()) {
+            val byPath = extractedFolders.firstOrNull { folder ->
+                val localFile = folder.localFile
+                val folderCanonical = localFile?.let {
+                    runCatching { it.canonicalPath }.getOrNull() ?: it.absolutePath
+                }
+                (!completedTarget.canonicalDirPath.isNullOrEmpty() && (
+                    folderCanonical == completedTarget.canonicalDirPath ||
+                        folder.id == completedTarget.canonicalDirPath
+                    )) ||
+                    (!completedTarget.absoluteDirPath.isNullOrEmpty() && (
+                        localFile?.absolutePath == completedTarget.absoluteDirPath ||
+                            folder.id == completedTarget.absoluteDirPath
+                        ))
+            }
+            if (byPath != null) return byPath
+        }
+
+        val outDir = completedTarget.outputDirectory
+        if (!outDir.isNullOrEmpty()) {
+            val byIdOrUri = extractedFolders.firstOrNull { folder ->
+                folder.id == outDir || folder.safUri?.toString() == outDir
+            }
+            if (byIdOrUri != null) return byIdOrUri
+        }
+
+        val expectedName = completedTarget.folderName.ifEmpty { outDir?.substringAfterLast('/') ?: "" }
+        if (expectedName.isNotEmpty()) {
+            val byName = extractedFolders.firstOrNull { folder ->
+                val hasConflictingLocalPath = folder.localFile != null &&
+                    !completedTarget.canonicalDirPath.isNullOrEmpty() &&
+                    !folder.isSaf &&
+                    (runCatching { folder.localFile.canonicalPath }.getOrNull() ?: folder.localFile.absolutePath) != completedTarget.canonicalDirPath
+                !hasConflictingLocalPath && folder.name == expectedName
+            } ?: extractedFolders.firstOrNull { folder ->
+                val hasConflictingLocalPath = folder.localFile != null &&
+                    !completedTarget.canonicalDirPath.isNullOrEmpty() &&
+                    !folder.isSaf &&
+                    (runCatching { folder.localFile.canonicalPath }.getOrNull() ?: folder.localFile.absolutePath) != completedTarget.canonicalDirPath
+                !hasConflictingLocalPath && folder.name.equals(expectedName, ignoreCase = true)
+            }
+            if (byName != null) return byName
+        }
+
+        return null
+    }
+
+    val outDir = fallbackOutputDirectory?.takeIf { it.isNotBlank() } ?: return null
+
+    val byIdOrUri = extractedFolders.firstOrNull { folder ->
+        folder.id == outDir || folder.safUri?.toString() == outDir
+    }
+    if (byIdOrUri != null) return byIdOrUri
+
+    val outCanonical = runCatching { File(outDir).canonicalPath }.getOrNull()
+    val byLocalPath = extractedFolders.firstOrNull { folder ->
+        val localFile = folder.localFile ?: return@firstOrNull false
+        val folderCanonical = runCatching { localFile.canonicalPath }.getOrNull() ?: localFile.absolutePath
+        localFile.absolutePath == outDir || (outCanonical != null && folderCanonical == outCanonical)
+    }
+    if (byLocalPath != null) return byLocalPath
+
+    val leafName = outDir.substringAfterLast('/')
+    if (leafName.isNotEmpty()) {
+        return extractedFolders.firstOrNull { it.name == leafName }
+            ?: extractedFolders.firstOrNull { it.name.equals(leafName, ignoreCase = true) }
+    }
+
+    return null
+}
+
+/**
+ * Determines whether [folder] is the single currently expanded folder.
+ */
+internal fun isExtractedFolderExpanded(
+    folder: ExtractedFolderEntry,
+    expandedFolderId: String?,
+    allFolders: List<ExtractedFolderEntry>
+): Boolean {
+    if (expandedFolderId.isNullOrEmpty()) return false
+    if (allFolders.any { it.id == expandedFolderId }) {
+        return folder.id == expandedFolderId
+    }
+    val resolved = resolveTargetExtractedFolder(
+        extractedFolders = allFolders,
+        completedTarget = null,
+        fallbackOutputDirectory = expandedFolderId
+    )
+    return resolved?.id == folder.id
+}
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -159,6 +286,7 @@ fun HatchExtractScreen(
     val pendingResumeStates by viewModel.pendingResumeStates.collectAsState()
     val availableArchives by viewModel.availableArchives.collectAsState()
     val extractedFolders by viewModel.extractedFolders.collectAsState()
+    val lastCompletedTarget by viewModel.lastCompletedTarget.collectAsState()
     val fileSizesCache by viewModel.fileSizesCache.collectAsState()
     val notificationsEnabled by viewModel.notificationsEnabled.collectAsState()
     val grantedFolder by viewModel.grantedFolder.collectAsState()
@@ -174,7 +302,11 @@ fun HatchExtractScreen(
     val tertiaryContainer = MaterialTheme.colorScheme.tertiaryContainer
     val onTertiaryContainer = MaterialTheme.colorScheme.onTertiaryContainer
 
+    val density = LocalDensity.current
+    val scrollTopPaddingPx = remember(density) { with(density) { 12.dp.roundToPx() } }
     val scrollState = rememberScrollState()
+    var scrollContainerTopInRoot by remember { mutableStateOf(0f) }
+    val folderTopOffsets = remember { mutableStateMapOf<String, Int>() }
     var showArchivePreviewer by remember { mutableStateOf(false) }
     var showPasswordField by remember(archiveSummary?.fileName, archiveSummary?.hasEncryptedEntries) {
         mutableStateOf(archiveSummary?.hasEncryptedEntries == true)
@@ -183,7 +315,9 @@ fun HatchExtractScreen(
     var showStorageComparison by remember(archiveSummary?.fileName) { mutableStateOf(false) }
     var showInPlaceConfirmDialog by remember { mutableStateOf(false) }
     var skipInPlaceConfirmSession by remember { mutableStateOf(false) }
-    var expandedFolderPath by remember { mutableStateOf<String?>(null) }
+    var expandedFolderPath by rememberSaveable { mutableStateOf<String?>(null) }
+    var handledAutoExpandCompletionKey by rememberSaveable { mutableStateOf<String?>(null) }
+    var pendingScrollFolderId by rememberSaveable { mutableStateOf<String?>(null) }
     var viewingFileEntry by remember { mutableStateOf<ExtractedFileEntry?>(null) }
     var viewingPreviewData by remember { mutableStateOf<FilePreviewData?>(null) }
     var showDiagnosticLogDialog by remember { mutableStateOf(false) }
@@ -197,20 +331,58 @@ fun HatchExtractScreen(
         ExtractionStatus.TRUNCATING
     )
 
-    LaunchedEffect(progress.status, progress.outputDirectory, extractedFolders.size) {
-        if (progress.status == ExtractionStatus.COMPLETED) {
-            val outDir = progress.outputDirectory
-            if (expandedFolderPath == null) {
-                val matched = extractedFolders.firstOrNull { folder ->
-                    outDir != null && (
-                        folder.id == outDir ||
-                            folder.name.equals(outDir, ignoreCase = true) ||
-                            folder.name.equals(outDir.substringAfterLast('/'), ignoreCase = true) ||
-                            folder.localFile?.absolutePath == outDir
-                        )
-                } ?: extractedFolders.firstOrNull()
-                expandedFolderPath = matched?.id ?: outDir
+    val completionKey: String? = when {
+        progress.status != ExtractionStatus.COMPLETED -> null
+        lastCompletedTarget != null -> {
+            val target = lastCompletedTarget!!
+            "target_${target.completionId}_${target.folderDocUriString.orEmpty()}_${target.canonicalDirPath.orEmpty()}_${target.outputDirectory.orEmpty()}"
+        }
+        !progress.outputDirectory.isNullOrEmpty() -> {
+            "progress_${progress.startTime}_${progress.outputDirectory}"
+        }
+        else -> null
+    }
+
+    LaunchedEffect(completionKey, lastCompletedTarget, progress.outputDirectory, extractedFolders) {
+        if (progress.status == ExtractionStatus.COMPLETED &&
+            completionKey != null &&
+            handledAutoExpandCompletionKey != completionKey
+        ) {
+            val matched = resolveTargetExtractedFolder(
+                extractedFolders = extractedFolders,
+                completedTarget = lastCompletedTarget,
+                fallbackOutputDirectory = progress.outputDirectory
+            )
+            if (matched != null) {
+                expandedFolderPath = matched.id
+                handledAutoExpandCompletionKey = completionKey
+                pendingScrollFolderId = matched.id
             }
+        }
+    }
+
+    LaunchedEffect(pendingScrollFolderId, extractedFolders) {
+        val targetId = pendingScrollFolderId ?: return@LaunchedEffect
+        if (extractedFolders.none { it.id == targetId }) return@LaunchedEffect
+
+        var attempts = 0
+        while (folderTopOffsets[targetId] == null && attempts < 6) {
+            withFrameNanos { }
+            attempts++
+        }
+        withFrameNanos { }
+
+        val initialY = folderTopOffsets[targetId]
+        if (initialY != null) {
+            val desiredScroll = (initialY - scrollTopPaddingPx).coerceAtLeast(0)
+            scrollState.animateScrollTo(desiredScroll.coerceAtMost(scrollState.maxValue))
+            if (desiredScroll > scrollState.value) {
+                delay(220)
+                val updatedY = folderTopOffsets[targetId] ?: initialY
+                val finalScroll = (updatedY - scrollTopPaddingPx).coerceAtLeast(0)
+                scrollState.animateScrollTo(finalScroll.coerceAtMost(scrollState.maxValue))
+            }
+            pendingScrollFolderId = null
         }
     }
 
@@ -345,7 +517,13 @@ fun HatchExtractScreen(
                     onClick = {
                         val toDelete = folderPendingDeletion
                         folderPendingDeletion = null
-                        toDelete?.let { viewModel.deleteExtractedFolder(it) }
+                        if (toDelete != null) {
+                            if (expandedFolderPath == toDelete.id) {
+                                expandedFolderPath = null
+                            }
+                            folderTopOffsets.remove(toDelete.id)
+                            viewModel.deleteExtractedFolder(toDelete)
+                        }
                     },
                     colors = ButtonDefaults.buttonColors(
                         containerColor = MaterialTheme.colorScheme.error,
@@ -541,6 +719,9 @@ fun HatchExtractScreen(
     Column(
         modifier = modifier
             .fillMaxSize()
+            .onGloballyPositioned { coords ->
+                scrollContainerTopInRoot = coords.positionInRoot().y
+            }
             .verticalScroll(scrollState)
             .padding(horizontal = 16.dp)
             .padding(top = topInsetPadding + 8.dp, bottom = 148.dp),
@@ -1726,18 +1907,16 @@ fun HatchExtractScreen(
                             FilledTonalButton(
                                 onClick = {
                                     viewModel.refreshLocalFiles()
-                                    val outDir = progress.outputDirectory
-                                    val matched = extractedFolders.firstOrNull { folder ->
-                                        outDir != null && (
-                                            folder.id == outDir ||
-                                                folder.name.equals(outDir, ignoreCase = true) ||
-                                                folder.name.equals(outDir.substringAfterLast('/'), ignoreCase = true) ||
-                                                folder.localFile?.absolutePath == outDir
-                                            )
-                                    } ?: extractedFolders.firstOrNull()
-                                    expandedFolderPath = matched?.id ?: outDir
-                                    coroutineScope.launch {
-                                        scrollState.animateScrollTo(scrollState.maxValue)
+                                    val matched = resolveTargetExtractedFolder(
+                                        extractedFolders = extractedFolders,
+                                        completedTarget = lastCompletedTarget,
+                                        fallbackOutputDirectory = progress.outputDirectory
+                                    )
+                                    if (matched != null) {
+                                        expandedFolderPath = matched.id
+                                        pendingScrollFolderId = matched.id
+                                    } else {
+                                        handledAutoExpandCompletionKey = null
                                     }
                                 },
                                 shape = RoundedCornerShape(50),
@@ -1775,13 +1954,12 @@ fun HatchExtractScreen(
 
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 extractedFolders.forEachIndexed { idx, folder ->
-                    val targetExpand = expandedFolderPath
-                    val isExpanded = targetExpand != null && (
-                        folder.id == targetExpand ||
-                            folder.name.equals(targetExpand, ignoreCase = true) ||
-                            folder.name.equals(targetExpand.substringAfterLast('/'), ignoreCase = true) ||
-                            folder.localFile?.absolutePath == targetExpand
-                        )
+                    key(folder.id) {
+                    val isExpanded = isExtractedFolderExpanded(
+                        folder = folder,
+                        expandedFolderId = expandedFolderPath,
+                        allFolders = extractedFolders
+                    )
                     val filesInside = folder.children
                     val pos = groupPositionFor(idx, extractedFolders.size)
 
@@ -1793,7 +1971,12 @@ fun HatchExtractScreen(
                         onClick = {
                             expandedFolderPath = if (isExpanded) null else folder.id
                         },
-                        modifier = Modifier.testTag("extracted_folder_$idx")
+                        modifier = Modifier
+                            .onGloballyPositioned { coords ->
+                                val contentOffsetY = (coords.positionInRoot().y - scrollContainerTopInRoot + scrollState.value).roundToInt()
+                                folderTopOffsets[folder.id] = contentOffsetY.coerceAtLeast(0)
+                            }
+                            .testTag("extracted_folder_$idx")
                     ) {
                         Column(modifier = Modifier.fillMaxWidth()) {
                             Row(
@@ -2081,6 +2264,7 @@ fun HatchExtractScreen(
                                 }
                             }
                         }
+                    }
                     }
                 }
             }
