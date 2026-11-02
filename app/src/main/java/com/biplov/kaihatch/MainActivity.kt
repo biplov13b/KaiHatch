@@ -1,9 +1,12 @@
 package com.biplov.kaihatch
 
+import android.animation.ValueAnimator
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -11,17 +14,23 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.SizeTransform
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.SnapSpec
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandHorizontally
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.scaleIn
 import androidx.compose.animation.scaleOut
+import androidx.compose.animation.shrinkHorizontally
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -57,20 +66,28 @@ import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.History
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Science
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Unarchive
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material.icons.outlined.Archive
 import androidx.compose.material.icons.outlined.Bolt
 import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.Science
 import androidx.compose.material.icons.outlined.Unarchive
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import com.biplov.kaihatch.data.HatchNotificationHelper
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.Immutable
@@ -106,7 +123,6 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.lerp
 import androidx.compose.ui.unit.sp
@@ -229,6 +245,11 @@ class MainActivity : ComponentActivity() {
                             ACTION_SHORTCUT_SETTINGS -> {
                                 hatchViewModel.openSettings()
                             }
+                            HatchNotificationHelper.ACTION_CONFIRM_STOP_FROM_NOTIFICATION -> {
+                                hatchViewModel.closeSettings()
+                                hatchViewModel.switchTab(ScreenTab.EXTRACT)
+                                hatchViewModel.requestStopExtractionConfirmation()
+                            }
                         }
                         pendingShortcutAction = null
                     }
@@ -250,7 +271,8 @@ class MainActivity : ComponentActivity() {
         return when (action) {
             ACTION_SHORTCUT_EXTRACT,
             ACTION_SHORTCUT_LABS,
-            ACTION_SHORTCUT_SETTINGS -> action
+            ACTION_SHORTCUT_SETTINGS,
+            HatchNotificationHelper.ACTION_CONFIRM_STOP_FROM_NOTIFICATION -> action
             else -> null
         }
     }
@@ -589,7 +611,25 @@ private fun KaiHatchRootContent(
                 )
             }
 
-            // 4. Contextual Floating Action Tile (Bottom-Right above dock)
+            // 4. Contextual Floating Action Tile (Bottom-Right above dock) + Outside-Tap Collapse Layer
+            val isFloatingControlsExpanded by viewModel.isFloatingControlsExpanded.collectAsState()
+            val showStopConfirmDialog by viewModel.showStopConfirmDialog.collectAsState()
+            val extractionProgressForDialog by viewModel.extractionProgress.collectAsState()
+
+            if (!showSettings && !showSpaceLab && isFloatingControlsExpanded && extractionProgressForDialog.status.isActiveSession) {
+                val outsideTapInteraction = remember { MutableInteractionSource() }
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .clickable(
+                            interactionSource = outsideTapInteraction,
+                            indication = null,
+                            onClick = { viewModel.setFloatingControlsExpanded(false) }
+                        )
+                        .testTag("floating_controls_outside_scrim")
+                )
+            }
+
             if (!showSettings && !showSpaceLab) {
                 HatchFloatingActionOverlay(
                     activePageTab = activePageTab,
@@ -601,6 +641,14 @@ private fun KaiHatchRootContent(
                         .align(Alignment.BottomEnd)
                         .navigationBarsPadding()
                         .padding(end = 20.dp, bottom = 86.dp)
+                )
+            }
+
+            if (showStopConfirmDialog && extractionProgressForDialog.status.isActiveSession) {
+                StopExtractionConfirmationDialog(
+                    isHatchMode = extractionProgressForDialog.isHatchMode,
+                    onKeepExtracting = { viewModel.dismissStopExtractionConfirmation() },
+                    onConfirmStop = { viewModel.confirmStopExtraction() }
                 )
             }
 
@@ -667,11 +715,12 @@ private fun HatchFloatingActionOverlay(
 ) {
     val extractionProgress by viewModel.extractionProgress.collectAsState()
     val compressionProgress by viewModel.compressionProgress.collectAsState()
+    val isFloatingControlsExpanded by viewModel.isFloatingControlsExpanded.collectAsState()
     val view = LocalView.current
 
-    val isExtracting = extractionProgress.status == ExtractionStatus.EXTRACTING ||
-        extractionProgress.status == ExtractionStatus.ANALYZING ||
-        extractionProgress.status == ExtractionStatus.TRUNCATING
+    val isExtracting = extractionProgress.status.isActiveSession
+    val isPausedOrPausing = extractionProgress.status == ExtractionStatus.PAUSED ||
+        extractionProgress.status == ExtractionStatus.PAUSING
     val isCompressing = compressionProgress.status == CompressionStatus.COMPRESSING ||
         compressionProgress.status == CompressionStatus.PREPARING
 
@@ -680,12 +729,47 @@ private fun HatchFloatingActionOverlay(
         horizontalAlignment = Alignment.End,
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
-        if (isExtracting || isCompressing) {
-            val rawProgress = if (isExtracting) {
-                extractionProgress.overallProgressFraction
-            } else {
-                compressionProgress.overallProgressFraction
-            }
+        if (isExtracting) {
+            val rawProgress = extractionProgress.overallProgressFraction.coerceIn(0f, 1f)
+            val animatedProgressState = animateFloatAsState(
+                targetValue = rawProgress,
+                animationSpec = if (isPausedOrPausing) {
+                    SnapSpec()
+                } else {
+                    spring(
+                        dampingRatio = Spring.DampingRatioNoBouncy,
+                        stiffness = Spring.StiffnessMediumLow
+                    )
+                },
+                label = "stop_tile_progress_outline"
+            )
+
+            AnimatedExtractionFloatingControls(
+                isExpanded = isFloatingControlsExpanded,
+                status = extractionProgress.status,
+                isPauseSupported = extractionProgress.isPauseSupported,
+                progressProvider = {
+                    if (isPausedOrPausing) rawProgress else animatedProgressState.value
+                },
+                onExpandClick = {
+                    HapticUtil.click(view)
+                    viewModel.setFloatingControlsExpanded(true)
+                },
+                onPauseClick = {
+                    HapticUtil.click(view)
+                    viewModel.pauseExtraction()
+                },
+                onResumeClick = {
+                    HapticUtil.confirm(view)
+                    viewModel.resumeExtraction()
+                },
+                onStopClick = {
+                    HapticUtil.heavy(view)
+                    viewModel.requestStopExtractionConfirmation()
+                }
+            )
+        } else if (isCompressing) {
+            val rawProgress = compressionProgress.overallProgressFraction
             val animatedProgressState = animateFloatAsState(
                 targetValue = rawProgress.coerceIn(0f, 1f),
                 animationSpec = spring(
@@ -701,8 +785,7 @@ private fun HatchFloatingActionOverlay(
                 progressOutlineColor = MaterialTheme.colorScheme.error,
                 onClick = {
                     HapticUtil.heavy(view)
-                    if (isExtracting) viewModel.cancelExtraction()
-                    if (isCompressing) viewModel.cancelCompression()
+                    viewModel.cancelCompression()
                 }
             )
         } else {
@@ -914,12 +997,260 @@ private fun ExpressiveActionTile(
     }
 }
 
+private val PauseBlueContainer = Color(0xFF0C4A6E)
+private val PauseBlueContent = Color(0xFFE0F2FE)
+private val PauseBlueAccent = Color(0xFF38BDF8)
+
+internal fun areSystemAnimationsEnabled(context: Context): Boolean {
+    return try {
+        ValueAnimator.areAnimatorsEnabled() &&
+            Settings.Global.getFloat(
+                context.contentResolver,
+                Settings.Global.ANIMATOR_DURATION_SCALE,
+                1f
+            ) > 0f
+    } catch (_: Throwable) {
+        true
+    }
+}
+
+@Immutable
+internal data class CollapsedExtractionTileSpec(
+    val icon: ImageVector,
+    val label: String,
+    val contentDescription: String
+)
+
+internal fun resolveCollapsedExtractionTileSpec(status: ExtractionStatus): CollapsedExtractionTileSpec {
+    // State-aware collapsed icon: Pause while running (including PAUSING transition before engine
+    // acknowledges pause), Play only once PAUSED is reached.
+    val isPaused = status == ExtractionStatus.PAUSED
+    return CollapsedExtractionTileSpec(
+        icon = if (isPaused) Icons.Default.PlayArrow else Icons.Default.Pause,
+        label = "Actions",
+        contentDescription = if (isPaused) {
+            "Extraction actions, paused. Double tap to open Resume and Stop controls."
+        } else {
+            "Extraction actions. Double tap to open Pause and Stop controls."
+        }
+    )
+}
+
+/**
+ * Floating extraction controls with state-aware collapsed "Actions" button and
+ * coordinated expand/collapse animation matching [com.biplov.kaihatch.ui.components.JournalTerminal]'s
+ * [androidx.compose.animation.AnimatedVisibility] transition pattern.
+ */
+@Composable
+private fun AnimatedExtractionFloatingControls(
+    isExpanded: Boolean,
+    status: ExtractionStatus,
+    isPauseSupported: Boolean,
+    progressProvider: () -> Float,
+    onExpandClick: () -> Unit,
+    onPauseClick: () -> Unit,
+    onResumeClick: () -> Unit,
+    onStopClick: () -> Unit
+) {
+    val context = LocalContext.current
+    val animationsEnabled = areSystemAnimationsEnabled(context)
+
+    val isPaused = status == ExtractionStatus.PAUSED
+    val isPausing = status == ExtractionStatus.PAUSING
+    val pauseActionEnabled = isPauseSupported && !isPausing
+
+    // Uses the same Spring.StiffnessMediumLow animation spec as Compose's default AnimatedVisibility
+    // in JournalTerminal so the progress outline hides/restores in lockstep with the expand/collapse.
+    val outlineAlpha by animateFloatAsState(
+        targetValue = if (isExpanded) 0f else 1f,
+        animationSpec = if (!animationsEnabled) {
+            SnapSpec()
+        } else {
+            spring(stiffness = Spring.StiffnessMediumLow)
+        },
+        label = "floating_controls_outline_alpha"
+    )
+
+    val pauseResumeIcon = if (isPaused) Icons.Default.PlayArrow else Icons.Default.Pause
+    val pauseResumeLabel = when {
+        isPaused -> "RESUME"
+        isPausing -> "PAUSING"
+        else -> "PAUSE"
+    }
+    val pauseResumeDesc = when {
+        isPaused -> "Resume extraction"
+        isPausing -> "Pausing extraction at safe checkpoint"
+        else -> "Pause extraction"
+    }
+
+    val collapsedSpec = resolveCollapsedExtractionTileSpec(status)
+
+    Row(
+        modifier = if (isExpanded) {
+            Modifier.testTag("floating_expanded_extraction_controls")
+        } else {
+            Modifier
+        },
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        AnimatedVisibility(
+            visible = isExpanded,
+            enter = if (animationsEnabled) {
+                fadeIn() + expandHorizontally()
+            } else {
+                EnterTransition.None
+            },
+            exit = if (animationsEnabled) {
+                fadeOut() + shrinkHorizontally()
+            } else {
+                ExitTransition.None
+            }
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(
+                    modifier = Modifier
+                        .size(width = 68.dp, height = 68.dp)
+                        .clip(ActionTileShape)
+                        .background(
+                            if (pauseActionEnabled) PauseBlueContainer else PauseBlueContainer.copy(alpha = 0.6f)
+                        )
+                        .border(
+                            width = 1.dp,
+                            color = PauseBlueAccent.copy(alpha = if (pauseActionEnabled) 0.45f else 0.22f),
+                            shape = ActionTileShape
+                        )
+                        .clickable(
+                            enabled = pauseActionEnabled && isExpanded,
+                            role = Role.Button,
+                            onClick = {
+                                if (isPaused) onResumeClick() else onPauseClick()
+                            }
+                        )
+                        .padding(vertical = 10.dp, horizontal = 6.dp)
+                        .testTag("floating_pause_resume_button"),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
+                ) {
+                    Icon(
+                        imageVector = pauseResumeIcon,
+                        contentDescription = pauseResumeDesc,
+                        tint = if (pauseActionEnabled) PauseBlueContent else PauseBlueContent.copy(alpha = 0.65f),
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Spacer(modifier = Modifier.height(3.dp))
+                    Text(
+                        text = pauseResumeLabel,
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontSize = 9.5.sp,
+                            letterSpacing = 0.5.sp
+                        ),
+                        fontWeight = FontWeight.ExtraBold,
+                        color = if (pauseActionEnabled) PauseBlueContent else PauseBlueContent.copy(alpha = 0.65f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                Spacer(modifier = Modifier.width(10.dp))
+            }
+        }
+
+        ExpressiveProgressStopTile(
+            progressProvider = progressProvider,
+            outlineAlphaProvider = { outlineAlpha },
+            containerColor = MaterialTheme.colorScheme.errorContainer,
+            contentColor = MaterialTheme.colorScheme.onErrorContainer,
+            progressOutlineColor = MaterialTheme.colorScheme.error,
+            icon = if (isExpanded) Icons.Default.Stop else collapsedSpec.icon,
+            label = if (isExpanded) "STOP" else collapsedSpec.label,
+            contentDescription = if (isExpanded) "Stop extraction" else collapsedSpec.contentDescription,
+            testTag = if (isExpanded) "floating_expanded_stop_button" else "floating_stop_action_tile",
+            onClick = {
+                if (!isExpanded) {
+                    onExpandClick()
+                } else {
+                    onStopClick()
+                }
+            }
+        )
+    }
+}
+
+@Composable
+private fun StopExtractionConfirmationDialog(
+    isHatchMode: Boolean,
+    onKeepExtracting: () -> Unit,
+    onConfirmStop: () -> Unit
+) {
+    val bodyMessage = if (isHatchMode) {
+        "In-Place Extraction may have already modified the original archive. Stopping now could leave the remaining archive unreadable, and unfinished files may not be recoverable."
+    } else {
+        "Extraction will stop, but your original archive will remain unchanged. Incomplete output files may need to be extracted again."
+    }
+    val confirmButtonLabel = if (isHatchMode) "Stop Anyway" else "Stop Extraction"
+
+    AlertDialog(
+        onDismissRequest = onKeepExtracting,
+        icon = {
+            Icon(
+                imageVector = Icons.Default.Warning,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.error
+            )
+        },
+        title = {
+            Text(
+                text = "Stop extraction?",
+                fontWeight = FontWeight.ExtraBold
+            )
+        },
+        text = {
+            Text(
+                text = bodyMessage,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        },
+        confirmButton = {
+            Button(
+                onClick = onConfirmStop,
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.error,
+                    contentColor = MaterialTheme.colorScheme.onError
+                ),
+                modifier = Modifier.testTag("confirm_stop_extraction_button")
+            ) {
+                Text(
+                    text = confirmButtonLabel,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        },
+        dismissButton = {
+            TextButton(
+                onClick = onKeepExtracting,
+                modifier = Modifier.testTag("keep_extracting_button")
+            ) {
+                Text(
+                    text = "Keep Extracting",
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        },
+        modifier = Modifier.testTag("stop_extraction_confirm_dialog")
+    )
+}
+
 @Composable
 private fun ExpressiveProgressStopTile(
     progressProvider: () -> Float,
     containerColor: Color,
     contentColor: Color,
     progressOutlineColor: Color,
+    icon: ImageVector = Icons.Default.Stop,
+    label: String = "STOP",
+    contentDescription: String = label,
+    outlineAlphaProvider: () -> Float = { 1f },
+    testTag: String = "floating_stop_action_tile",
     onClick: () -> Unit
 ) {
     Column(
@@ -927,7 +1258,10 @@ private fun ExpressiveProgressStopTile(
             .size(width = 68.dp, height = 68.dp)
             .clip(ActionTileShape)
             .background(containerColor)
-            .clickable(onClick = onClick)
+            .clickable(
+                role = Role.Button,
+                onClick = onClick
+            )
             .drawWithCache {
                 val strokePx = 3.5.dp.toPx()
                 val inset = strokePx / 2f
@@ -975,45 +1309,58 @@ private fun ExpressiveProgressStopTile(
                 val segmentPath = Path()
                 val trackStroke = Stroke(width = strokePx)
                 val progressStroke = Stroke(width = strokePx, cap = StrokeCap.Round)
+                val expandedBorderStroke = Stroke(width = 1.dp.toPx())
                 val trackColor = contentColor.copy(alpha = 0.2f)
+                val expandedBorderBaseColor = contentColor.copy(alpha = 0.16f)
 
                 onDrawWithContent {
                     drawContent()
-                    drawPath(
-                        path = fullPath,
-                        color = trackColor,
-                        style = trackStroke
-                    )
-                    val progress = progressProvider().coerceIn(0f, 1f)
-                    val stopDistance = pathMeasure.length * progress.coerceAtLeast(0.03f)
-                    segmentPath.reset()
-                    pathMeasure.getSegment(
-                        startDistance = 0f,
-                        stopDistance = stopDistance,
-                        destination = segmentPath,
-                        startWithMoveTo = true
-                    )
-                    drawPath(
-                        path = segmentPath,
-                        color = progressOutlineColor,
-                        style = progressStroke
-                    )
+                    val outlineAlpha = outlineAlphaProvider().coerceIn(0f, 1f)
+                    if (outlineAlpha > 0.001f) {
+                        drawPath(
+                            path = fullPath,
+                            color = trackColor.copy(alpha = trackColor.alpha * outlineAlpha),
+                            style = trackStroke
+                        )
+                        val progress = progressProvider().coerceIn(0f, 1f)
+                        val stopDistance = pathMeasure.length * progress.coerceAtLeast(0.03f)
+                        segmentPath.reset()
+                        pathMeasure.getSegment(
+                            startDistance = 0f,
+                            stopDistance = stopDistance,
+                            destination = segmentPath,
+                            startWithMoveTo = true
+                        )
+                        drawPath(
+                            path = segmentPath,
+                            color = progressOutlineColor.copy(alpha = progressOutlineColor.alpha * outlineAlpha),
+                            style = progressStroke
+                        )
+                    }
+                    val expandedBorderAlpha = (1f - outlineAlpha).coerceIn(0f, 1f)
+                    if (expandedBorderAlpha > 0.001f) {
+                        drawPath(
+                            path = fullPath,
+                            color = expandedBorderBaseColor.copy(alpha = expandedBorderBaseColor.alpha * expandedBorderAlpha),
+                            style = expandedBorderStroke
+                        )
+                    }
                 }
             }
             .padding(vertical = 10.dp, horizontal = 6.dp)
-            .testTag("floating_stop_action_tile"),
+            .testTag(testTag),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
         Icon(
-            imageVector = Icons.Default.Stop,
-            contentDescription = "STOP",
+            imageVector = icon,
+            contentDescription = contentDescription,
             tint = contentColor,
             modifier = Modifier.size(24.dp)
         )
         Spacer(modifier = Modifier.height(3.dp))
         Text(
-            text = "STOP",
+            text = label,
             style = MaterialTheme.typography.labelSmall.copy(
                 fontSize = 9.5.sp,
                 letterSpacing = 0.5.sp

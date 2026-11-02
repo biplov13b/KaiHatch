@@ -56,10 +56,14 @@ Select a local archive, choose between in-place Hatch Mode and non-destructive S
 Follow live extraction progress as archive space is reclaimed in place, then browse and open unpacked files directly from local storage.
 
 <p align="center">
-  <img src="docs/screenshots/04-live-extraction.png" alt="Live Hatch Mode extraction progress and real-time storage reclamation" width="30%" />
-  &nbsp;&nbsp;
+  <img src="docs/screenshots/04-live-extraction.png" alt="Live Hatch Mode extraction with floating Actions control and progress outline" width="30%" />
+  &nbsp;
+  <img src="docs/screenshots/extraction-actions-expanded.png" alt="Live Hatch Mode extraction with expanded Pause and Stop controls" width="30%" />
+  &nbsp;
   <img src="docs/screenshots/05-extracted-files.png" alt="Extracted files browser with direct file actions" width="30%" />
 </p>
+
+During an active extraction, the floating button displays a Pause icon and an **Actions** label while its rounded-square outline tracks live extraction progress. Tapping **Actions** expands the control to reveal **Pause**/**Resume** and **Stop** without immediately interrupting the job. Selecting **Pause** temporarily suspends the active extraction session at a safe checkpoint, and **Resume** continues that same session from where it paused. Selecting **Stop** opens a confirmation dialog before cancelling extraction.
 
 ### Archive Creation
 
@@ -91,6 +95,7 @@ Customize Light, Dark, or System themes and accent palettes, manage persistent l
 | <img src="docs/assets/features/integrity-check.svg" width="32" height="32" alt="Integrity check" /> | **Verify Before Truncate** | Validates extracted output against archive `CRC32` checksums and syncs data to disk (`fsync`) before removing corresponding bytes from the archive. |
 | <img src="docs/assets/features/local-storage.svg" width="32" height="32" alt="Local storage" /> | **Direct Local & SAF Storage Access** | Works directly on writable local Android storage—including **Downloads** and **Internal / SD Card Storage** via Android's Storage Access Framework (`"rw"` file descriptors). |
 | <img src="docs/assets/features/appearance.svg" width="32" height="32" alt="Appearance" /> | **Adaptive Material 3 Interface** | Clean, distraction-free Android UI with Light, Dark, and System themes, real-time storage telemetry, and built-in Space Lab storage modeling. |
+| <img src="docs/assets/features/extraction-controls.svg" width="32" height="32" alt="In-session extraction controls" /> | **In-Session Extraction Controls** | Pause and resume an active extraction session at safe checkpoints, access **Pause**/**Resume** and **Stop** through the floating **Actions** control, and confirm before stopping extraction. |
 
 ---
 
@@ -131,6 +136,8 @@ KaiHatch's **Hatch Mode** reduces peak storage usage through four mechanisms:
 > **Hatch Mode modifies, truncates, and ultimately deletes the original archive file in place** in order to extract archives when free disk space is smaller than the archive itself.
 >
 > Hatch Mode is **not** risk-free. Because it alters the original archive file on disk, interrupting extraction during specific destructive phases (or encountering corrupted archive entries mid-stream) can leave the original archive partially consumed or unrecoverable. Always use **Standard Mode** when you have sufficient free storage or cannot afford to lose the original archive. See [Known Limitations & Safety Disclosures](#known-limitations--safety-disclosures) below for full technical details.
+
+When you select **Stop** from the expanded extraction controls, KaiHatch presents a confirmation dialog before cancelling the job: stopping **Standard Mode** leaves the original archive intact, whereas stopping **Hatch Mode** after progressive source consumption has begun may leave the remaining archive unreadable.
 
 ---
 
@@ -204,10 +211,11 @@ KaiHatch includes a JVM and Robolectric test suite covering fault injection, cra
 
 1. **Large Single-Entry Tail-Swap Unrecoverable Window:** When extracting a single large entry whose uncompressed output exceeds available free storage, KaiHatch performs an in-place tail-swap that overwrites the beginning of the archive (`slot 0`) after the entry has been decompressed and CRC-verified. If the process is killed, the device loses power, or an I/O failure occurs **after** `slot 0` overwrite has begun and before the final `fsync` + `rename` completes, the original compressed header at `slot 0` is already overwritten and **the archive cannot be recovered**.
 2. **Mid-Stream Integrity / Decompression Failure After Partial Consumption:** In multi-entry archives, each completed entry at the tail of the archive is immediately truncated off the source archive. If a later entry at an earlier byte offset fails `CRC32` verification or decompression, all previously extracted entries remain valid on disk, and KaiHatch halts before deleting the remaining prefix of the archive—but the already-truncated tail entries are no longer present inside the source archive file.
-3. **External Modification While Paused/Interrupted:** If an external app modifies or truncates a paused archive so its actual descriptor size or `slot 0` header CRC (`slot0Crc`) no longer matches the write-ahead journal checkpoint, resume is blocked to prevent silent corruption.
+3. **External Modification While Interrupted:** If an external app modifies or truncates an interrupted Hatch Mode archive so its actual descriptor size or `slot 0` header CRC (`slot0Crc`) no longer matches the write-ahead recovery journal checkpoint, journal recovery is blocked to prevent silent corruption.
 4. **Solid `.7z` and `.tar.gz` Archives:** Progressive tail-truncation is mathematically impossible on single-dictionary solid `.7z` streams and `.tar.gz` streams without decompressing from byte `0`. Use **Standard Mode** for these formats.
 5. **Encrypted Archives:** Password-protected and AES-encrypted `.zip` and `.7z` archives are detected and rejected with an explicit unsupported-encryption error.
 6. **SAF Destination Directory Permissions:** Extracting via SAF requires selecting a writable local output folder via `ACTION_OPEN_DOCUMENT_TREE`.
+7. **In-Session Pause/Resume Scope:** Pause/Resume preserves the active extraction session in memory only while the app process remains alive; it does not guarantee continuation after force-closing the app, OS process termination, or a device reboot (and is separate from the write-ahead journal recovery mechanism for interrupted Hatch Mode truncations).
 
 ---
 

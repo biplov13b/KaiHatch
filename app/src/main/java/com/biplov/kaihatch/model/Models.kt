@@ -23,9 +23,19 @@ enum class ExtractionStatus {
     EXTRACTING,
     VERIFYING_CRC,
     TRUNCATING,
+    PAUSING,
+    PAUSED,
     COMPLETED,
     CANCELLED,
-    ERROR
+    ERROR;
+
+    val isActiveSession: Boolean
+        get() = this == ANALYZING ||
+            this == EXTRACTING ||
+            this == VERIFYING_CRC ||
+            this == TRUNCATING ||
+            this == PAUSING ||
+            this == PAUSED
 }
 
 enum class CompressionStatus {
@@ -111,7 +121,8 @@ data class ExtractionProgress(
     val errorMessage: String? = null,
     val outputDirectory: String? = null,
     val startTime: Long = 0L,
-    val elapsedTimeMs: Long = 0L
+    val elapsedTimeMs: Long = 0L,
+    val isPauseSupported: Boolean = true
 ) {
     val overallProgressFraction: Float
         get() = when {

@@ -67,7 +67,8 @@ object KaiHatchEngine {
         selectedEntryPaths: Set<String>? = null,
         context: Context? = null,
         targetTreeUri: Uri? = null,
-        targetFolderDocUri: Uri? = null
+        targetFolderDocUri: Uri? = null,
+        pauseController: ExtractionPauseController? = null
     ): Flow<ExtractionProgress> = flow {
         try {
             if (!archiveFile.exists()) {
@@ -97,7 +98,8 @@ object KaiHatchEngine {
                     status = ExtractionStatus.ANALYZING,
                     originalArchiveBytes = originalArchiveSize,
                     currentArchiveBytesOnDisk = originalArchiveSize,
-                    journalLogs = listOf("Inspecting ${format.label} index...")
+                    journalLogs = listOf("Inspecting ${format.label} index..."),
+                    isPauseSupported = pauseController?.isPauseSupported ?: true
                 )
             )
 
@@ -111,6 +113,7 @@ object KaiHatchEngine {
                     context = context,
                     targetTreeUri = targetTreeUri,
                     targetFolderDocUri = targetFolderDocUri,
+                    pauseController = pauseController,
                     onDeleteSource = { if (isHatchMode && selectedEntryPaths == null) archiveFile.delete() }
                 ).collect { emit(it) }
                 return@flow
@@ -131,6 +134,7 @@ object KaiHatchEngine {
                         context = context,
                         targetTreeUri = targetTreeUri,
                         targetFolderDocUri = targetFolderDocUri,
+                        pauseController = pauseController,
                         onFinalTruncateDelete = {
                             if (isHatchMode && selectedEntryPaths == null) {
                                 archiveFile.delete()
@@ -217,6 +221,7 @@ object KaiHatchEngine {
                     context = context,
                     targetTreeUri = targetTreeUri,
                     targetFolderDocUri = targetFolderDocUri,
+                    pauseController = pauseController,
                     onFinalTruncateDelete = {
                         if (effectiveHatchMode) {
                             archiveFile.delete()
@@ -224,6 +229,8 @@ object KaiHatchEngine {
                     }
                 ).collect { emit(it) }
             }
+        } catch (ce: kotlinx.coroutines.CancellationException) {
+            throw ce
         } catch (t: Throwable) {
             val err = t.localizedMessage ?: t.javaClass.simpleName
             emit(
@@ -235,7 +242,7 @@ object KaiHatchEngine {
                 )
             )
         }
-    }.conflate().flowOn(Dispatchers.IO)
+    }.flowOn(Dispatchers.IO)
 
     /**
      * True Zero-Copy In-Place SAF URI Extractor:
@@ -254,7 +261,8 @@ object KaiHatchEngine {
         password: String? = null,
         selectedEntryPaths: Set<String>? = null,
         targetTreeUri: Uri? = null,
-        targetFolderDocUri: Uri? = null
+        targetFolderDocUri: Uri? = null,
+        pauseController: ExtractionPauseController? = null
     ): Flow<ExtractionProgress> = flow {
         try {
             val filteredEntries = if (selectedEntryPaths != null) {
@@ -291,6 +299,7 @@ object KaiHatchEngine {
                     context = context,
                     targetTreeUri = targetTreeUri,
                     targetFolderDocUri = targetFolderDocUri,
+                    pauseController = pauseController,
                     onDeleteSource = {
                         if (isHatchMode && selectedEntryPaths == null) {
                             try {
@@ -415,6 +424,7 @@ object KaiHatchEngine {
                             context = context,
                             targetTreeUri = targetTreeUri,
                             targetFolderDocUri = targetFolderDocUri,
+                            pauseController = pauseController,
                             onFinalTruncateDelete = {
                                 if (wantsWrite) {
                                     try {
@@ -444,6 +454,7 @@ object KaiHatchEngine {
                             context = context,
                             targetTreeUri = targetTreeUri,
                             targetFolderDocUri = targetFolderDocUri,
+                            pauseController = pauseController,
                             onFinalTruncateDelete = {
                                 if (wantsWrite) {
                                     try {
@@ -456,6 +467,8 @@ object KaiHatchEngine {
                     }
                 }
             }
+        } catch (ce: kotlinx.coroutines.CancellationException) {
+            throw ce
         } catch (t: Throwable) {
             val err = t.localizedMessage ?: t.javaClass.simpleName
             emit(
@@ -467,7 +480,7 @@ object KaiHatchEngine {
                 )
             )
         }
-    }.conflate().flowOn(Dispatchers.IO)
+    }.flowOn(Dispatchers.IO)
 
     private fun StorageHelperSafeSize(context: Context, uri: Uri): Long {
         return try {
@@ -495,7 +508,8 @@ object KaiHatchEngine {
     fun resumeInterruptedExtraction(
         context: Context,
         resumeState: ResumeJournalState,
-        password: String? = null
+        password: String? = null,
+        pauseController: ExtractionPauseController? = null
     ): Flow<ExtractionProgress> = flow {
         try {
             val targetDir = File(resumeState.targetDirPath)
@@ -659,6 +673,7 @@ object KaiHatchEngine {
                             initialVerifiedCrcs = resumeState.verifiedEntryCrcs,
                             stateFilePath = resumeState.stateFilePath,
                             password = password ?: resumeState.password,
+                            pauseController = pauseController,
                             onFinalTruncateDelete = {
                                 try {
                                     DocumentsContract.deleteDocument(context.contentResolver, uri)
@@ -699,6 +714,7 @@ object KaiHatchEngine {
                         initialVerifiedCrcs = resumeState.verifiedEntryCrcs,
                         stateFilePath = resumeState.stateFilePath,
                         password = password ?: resumeState.password,
+                        pauseController = pauseController,
                         onFinalTruncateDelete = {
                             archiveFile.delete()
                         }
@@ -716,7 +732,7 @@ object KaiHatchEngine {
                 )
             )
         }
-    }.conflate().flowOn(Dispatchers.IO)
+    }.flowOn(Dispatchers.IO)
 
     /**
      * Zero-Copy 64-Bit 7z (LZMA/LZMA2) Extractor supporting 6GB+ .7z archives directly over FileChannel.
@@ -734,19 +750,25 @@ object KaiHatchEngine {
         context: Context? = null,
         targetTreeUri: Uri? = null,
         targetFolderDocUri: Uri? = null,
+        pauseController: ExtractionPauseController? = null,
         onFinalTruncateDelete: () -> Unit
-    ): Flow<ExtractionProgress> = flow {
+    ): Flow<ExtractionProgress> = channelFlow {
         val startTime = System.currentTimeMillis()
         var lastSpeedCalcTime = startTime
         var lastEmitTime = 0L
         var bytesSinceSpeedCheck = 0L
         var currentSpeed = 0L
 
+        val journalLock = Any()
         val journalLogs = mutableListOf<String>()
+        var journalSnapshot: List<String> = emptyList()
         fun logJournal(msg: String) {
             val time = SimpleDateFormat("HH:mm:ss", Locale.getDefault()).format(Date())
-            journalLogs.add("[$time] $msg")
-            if (journalLogs.size > 100) journalLogs.removeAt(0)
+            synchronized(journalLock) {
+                journalLogs.add("[$time] $msg")
+                if (journalLogs.size > 100) journalLogs.removeAt(0)
+                journalSnapshot = journalLogs.toList()
+            }
         }
 
         if (!targetDir.exists()) targetDir.mkdirs()
@@ -756,7 +778,7 @@ object KaiHatchEngine {
         val isHeaderEncrypted = ZipParser.detectSevenZHeaderEncryption(channel)
         if (isHeaderEncrypted && password.isNullOrEmpty()) {
             logJournal("7Z ENCRYPTED: Archive header is encrypted with AES-256 (7zAES). Password required.")
-            emit(
+            send(
                 ExtractionProgress(
                     archiveName = archiveName,
                     isHatchMode = isHatchMode,
@@ -764,10 +786,10 @@ object KaiHatchEngine {
                     isZip64 = originalArchiveSize >= 0xFFFFFFFFL,
                     status = ExtractionStatus.ERROR,
                     errorMessage = "This .7z archive uses AES-256 header encryption. Please enter the archive password and try again.",
-                    journalLogs = journalLogs.toList()
+                    journalLogs = journalSnapshot
                 )
             )
-            return@flow
+            return@channelFlow
         }
 
         var totalUncompressedBytes = originalArchiveSize
@@ -835,7 +857,7 @@ object KaiHatchEngine {
             if (lastOpenError is PasswordRequiredException || (isHeaderEncrypted && password.isNullOrEmpty())) {
                 val pwdMsg = "This .7z archive is encrypted. Please enter the archive password. [$stateDesc]"
                 logJournal("7Z ERROR: $pwdMsg")
-                emit(
+                send(
                     ExtractionProgress(
                         archiveName = archiveName,
                         isHatchMode = isHatchMode,
@@ -846,17 +868,17 @@ object KaiHatchEngine {
                         originalArchiveBytes = originalArchiveSize,
                         currentArchiveBytesOnDisk = currentDiskBytes,
                         bytesReclaimed = bytesReclaimed,
-                        journalLogs = journalLogs.toList()
+                        journalLogs = journalSnapshot
                     )
                 )
-                return@flow
+                return@channelFlow
             }
             val errDetail = lastOpenError?.localizedMessage
                 ?: lastOpenError?.message
                 ?: "Corrupted 7z archive or unsupported compression method"
             val fullErr = "7z extraction failed: $errDetail [$stateDesc]"
             logJournal("FATAL 7Z OPEN ERROR: [${lastOpenError?.javaClass?.simpleName ?: "IOException"}] $fullErr")
-            emit(
+            send(
                 ExtractionProgress(
                     archiveName = archiveName,
                     isHatchMode = isHatchMode,
@@ -868,10 +890,10 @@ object KaiHatchEngine {
                     originalArchiveBytes = originalArchiveSize,
                     currentArchiveBytesOnDisk = currentDiskBytes,
                     bytesReclaimed = bytesReclaimed,
-                    journalLogs = journalLogs.toList()
+                    journalLogs = journalSnapshot
                 )
             )
-            return@flow
+            return@channelFlow
         }
 
         val displayDir = if (context != null && targetTreeUri != null) {
@@ -880,11 +902,64 @@ object KaiHatchEngine {
 
         var activeEntryTargetOut: TargetOutput? = null
         var completedCount = 0
+        var totalEntriesCount = 1
+        var activeFileName = ""
+        var activeEntryWritten = 0L
+        var activeEntryTotal = 0L
+        var activeEntryCrc = 0L
+
+        fun build7zProgress(statusOverride: ExtractionStatus, speedOverride: Long = currentSpeed): ExtractionProgress {
+            val nowMs = System.currentTimeMillis()
+            val pausedMs = pauseController?.totalPausedDurationMs(nowMs) ?: 0L
+            return ExtractionProgress(
+                archiveName = archiveName,
+                isHatchMode = isHatchMode,
+                isZeroCopySaf = isZeroCopySaf,
+                isZip64 = originalArchiveSize >= 0xFFFFFFFFL,
+                status = statusOverride,
+                totalEntries = totalEntriesCount,
+                completedEntries = completedCount,
+                currentFileName = activeFileName,
+                currentFileBytesProcessed = activeEntryWritten,
+                currentFileTotalBytes = activeEntryTotal,
+                totalUncompressedBytes = totalUncompressedBytes,
+                currentEntryCrc = activeEntryCrc,
+                isCrcValid = true,
+                originalArchiveBytes = originalArchiveSize,
+                currentArchiveBytesOnDisk = currentDiskBytes,
+                bytesExtracted = bytesExtracted,
+                bytesReclaimed = bytesReclaimed,
+                bytesPerSecond = speedOverride,
+                journalLogs = journalSnapshot,
+                outputDirectory = displayDir,
+                startTime = startTime,
+                elapsedTimeMs = (nowMs - startTime - pausedMs).coerceAtLeast(0L),
+                isPauseSupported = pauseController?.isPauseSupported ?: true
+            )
+        }
+
+        pauseController?.setActiveWorkerCount(1)
+        pauseController?.bindCallbacks(
+            onPauseRequested = {
+                trySend(build7zProgress(statusOverride = ExtractionStatus.PAUSING, speedOverride = 0L))
+            },
+            onPauseAcknowledged = {
+                currentSpeed = 0L
+                logJournal("PAUSED: 7z stream suspended at safe checkpoint")
+                trySend(build7zProgress(statusOverride = ExtractionStatus.PAUSED, speedOverride = 0L))
+            },
+            onResumed = {
+                lastSpeedCalcTime = System.currentTimeMillis()
+                bytesSinceSpeedCheck = 0L
+                logJournal("RESUMED: Continuing 7z LZMA2 stream extraction")
+                trySend(build7zProgress(statusOverride = ExtractionStatus.EXTRACTING, speedOverride = 0L))
+            }
+        )
 
         try {
             archive.use { sevenZArchive ->
                 val allMeta = sevenZArchive.entries.toList()
-                val totalEntriesCount = allMeta.size.coerceAtLeast(1)
+                totalEntriesCount = allMeta.size.coerceAtLeast(1)
                 totalUncompressedBytes = allMeta.sumOf { if (it.size > 0L) it.size else 0L }.coerceAtLeast(originalArchiveSize)
                 logJournal("7Z ARCHIVE OPENED: $totalEntriesCount entries, uncompressed total: ${formatSize(totalUncompressedBytes)}")
                 allMeta.take(3).forEach { e ->
@@ -893,11 +968,13 @@ object KaiHatchEngine {
                 val buffer = CommonsCompressBufferStrategy.borrowIoBuffer(originalArchiveSize)
 
                 while (coroutineContext.isActive) {
+                    pauseController?.checkpoint()
+
                     val entry = try {
                         sevenZArchive.nextEntry
                     } catch (pwdEx: PasswordRequiredException) {
                         logJournal("ERROR: Password required for encrypted .7z")
-                        emit(
+                        send(
                             ExtractionProgress(
                                 archiveName = archiveName,
                                 isHatchMode = isHatchMode,
@@ -905,10 +982,10 @@ object KaiHatchEngine {
                                 isZip64 = originalArchiveSize >= 0xFFFFFFFFL,
                                 status = ExtractionStatus.ERROR,
                                 errorMessage = "This .7z archive is password-protected. Please enter the password and try again.",
-                                journalLogs = journalLogs.toList()
+                                journalLogs = journalSnapshot
                             )
                         )
-                        return@flow
+                        return@channelFlow
                     } ?: break
 
                     val rawPath = entry.name?.replace('\\', '/')?.trimStart('/') ?: "entry_$completedCount"
@@ -923,6 +1000,7 @@ object KaiHatchEngine {
                             val r = sevenZArchive.read(buffer, 0, rem.coerceAtMost(buffer.size.toLong()).toInt())
                             if (r <= 0) break
                             rem -= r
+                            pauseController?.checkpoint()
                         }
                         continue
                     }
@@ -942,8 +1020,12 @@ object KaiHatchEngine {
                     var entryWritten = 0L
                     var lastProgressLogChunk = 0L
                     val crc = CRC32()
+                    activeFileName = rawPath.substringAfterLast('/')
+                    activeEntryWritten = 0L
+                    activeEntryTotal = entryTotal
+                    activeEntryCrc = 0L
 
-                    logJournal("Extracting: ${rawPath.substringAfterLast('/')} (${formatSize(entryTotal)})...")
+                    logJournal("Extracting: $activeFileName (${formatSize(entryTotal)})...")
 
                     val targetOut = StorageHelper.openTargetOutput(
                         context = context,
@@ -965,6 +1047,8 @@ object KaiHatchEngine {
                                 entryWritten += r
                                 bytesExtracted += r
                                 bytesSinceSpeedCheck += r
+                                activeEntryWritten = entryWritten
+                                activeEntryCrc = crc.value
 
                                 if (truncating7zChannel != null) {
                                     currentDiskBytes = truncating7zChannel.getCurrentPhysicalSize()
@@ -986,34 +1070,20 @@ object KaiHatchEngine {
                                     val wasTruncate = pendingTruncateEmit
                                     pendingTruncateEmit = false
                                     lastEmitTime = now
-
-                                    emit(
-                                        ExtractionProgress(
-                                            archiveName = archiveName,
-                                            isHatchMode = isHatchMode,
-                                            isZeroCopySaf = isZeroCopySaf,
-                                            isZip64 = originalArchiveSize >= 0xFFFFFFFFL,
-                                            status = if (wasTruncate && isHatchMode) ExtractionStatus.TRUNCATING else ExtractionStatus.EXTRACTING,
-                                            totalEntries = totalEntriesCount,
-                                            completedEntries = completedCount,
-                                            currentFileName = rawPath.substringAfterLast('/'),
-                                            currentFileBytesProcessed = entryWritten,
-                                            currentFileTotalBytes = entryTotal,
-                                            totalUncompressedBytes = totalUncompressedBytes,
-                                            currentEntryCrc = crc.value,
-                                            isCrcValid = true,
-                                            originalArchiveBytes = originalArchiveSize,
-                                            currentArchiveBytesOnDisk = currentDiskBytes,
-                                            bytesExtracted = bytesExtracted,
-                                            bytesReclaimed = bytesReclaimed,
-                                            bytesPerSecond = currentSpeed,
-                                            journalLogs = journalLogs.toList(),
-                                            outputDirectory = displayDir,
-                                            startTime = startTime,
-                                            elapsedTimeMs = now - startTime
+                                    val statusNow = when {
+                                        pauseController?.isPausing == true -> ExtractionStatus.PAUSING
+                                        wasTruncate && isHatchMode -> ExtractionStatus.TRUNCATING
+                                        else -> ExtractionStatus.EXTRACTING
+                                    }
+                                    send(
+                                        build7zProgress(
+                                            statusOverride = statusNow,
+                                            speedOverride = if (statusNow == ExtractionStatus.PAUSING) 0L else currentSpeed
                                         )
                                     )
                                 }
+
+                                pauseController?.checkpoint(flushBeforePause = { out.flush() })
                             }
                             out.flush()
                         }
@@ -1052,7 +1122,7 @@ object KaiHatchEngine {
                         }
                         val fullErr = "$mismatchDetail [$stateDesc]"
                         logJournal("7Z INTEGRITY ERROR: $fullErr")
-                        emit(
+                        send(
                             ExtractionProgress(
                                 archiveName = archiveName,
                                 isHatchMode = isHatchMode,
@@ -1069,49 +1139,31 @@ object KaiHatchEngine {
                                 currentArchiveBytesOnDisk = currentDiskBytes,
                                 bytesExtracted = bytesExtracted,
                                 bytesReclaimed = bytesReclaimed,
-                                journalLogs = journalLogs.toList()
+                                journalLogs = journalSnapshot
                             )
                         )
-                        return@flow
+                        return@channelFlow
                     }
 
                     activeEntryTargetOut = null
                     completedCount++
+                    activeEntryCrc = actual7zCrc
                     logJournal("7Z Extracted & Verified [0x${String.format("%08X", actual7zCrc)}]: ${rawPath.substringAfterLast('/')} (${formatSize(entryWritten)})")
 
                     val nowAfterEntry = System.currentTimeMillis()
                     lastEmitTime = nowAfterEntry
                     pendingTruncateEmit = false
-                    emit(
-                        ExtractionProgress(
-                            archiveName = archiveName,
-                            isHatchMode = isHatchMode,
-                            isZeroCopySaf = isZeroCopySaf,
-                            isZip64 = originalArchiveSize >= 0xFFFFFFFFL,
-                            status = ExtractionStatus.EXTRACTING,
-                            totalEntries = totalEntriesCount,
-                            completedEntries = completedCount,
-                            currentFileName = rawPath.substringAfterLast('/'),
-                            currentFileBytesProcessed = entryWritten,
-                            currentFileTotalBytes = entryTotal,
-                            totalUncompressedBytes = totalUncompressedBytes,
-                            currentEntryCrc = actual7zCrc,
-                            isCrcValid = true,
-                            originalArchiveBytes = originalArchiveSize,
-                            currentArchiveBytesOnDisk = currentDiskBytes,
-                            bytesExtracted = bytesExtracted,
-                            bytesReclaimed = bytesReclaimed,
-                            bytesPerSecond = currentSpeed,
-                            journalLogs = journalLogs.toList(),
-                            outputDirectory = displayDir,
-                            startTime = startTime,
-                            elapsedTimeMs = nowAfterEntry - startTime
+                    val statusAfterEntry = if (pauseController?.isPausing == true) ExtractionStatus.PAUSING else ExtractionStatus.EXTRACTING
+                    send(
+                        build7zProgress(
+                            statusOverride = statusAfterEntry,
+                            speedOverride = if (statusAfterEntry == ExtractionStatus.PAUSING) 0L else currentSpeed
                         )
                     )
                 }
 
                 if (!coroutineContext.isActive) {
-                    emit(
+                    send(
                         ExtractionProgress(
                             archiveName = archiveName,
                             isHatchMode = isHatchMode,
@@ -1124,10 +1176,10 @@ object KaiHatchEngine {
                             currentArchiveBytesOnDisk = currentDiskBytes,
                             bytesExtracted = bytesExtracted,
                             bytesReclaimed = bytesReclaimed,
-                            journalLogs = journalLogs.toList()
+                            journalLogs = journalSnapshot
                         )
                     )
-                    return@flow
+                    return@channelFlow
                 }
 
                 if (isHatchMode) {
@@ -1152,7 +1204,9 @@ object KaiHatchEngine {
                     StorageHelper.getGrantedFolderInfo(context)?.let { "${it.displayName}/${targetDir.name}" } ?: targetDir.absolutePath
                 } else targetDir.absolutePath
 
-                emit(
+                val endNow = System.currentTimeMillis()
+                val pausedMs = pauseController?.totalPausedDurationMs(endNow) ?: 0L
+                send(
                     ExtractionProgress(
                         archiveName = archiveName,
                         isHatchMode = isHatchMode,
@@ -1167,29 +1221,28 @@ object KaiHatchEngine {
                         currentArchiveBytesOnDisk = if (isHatchMode) 0L else originalArchiveSize,
                         bytesExtracted = bytesExtracted,
                         bytesReclaimed = if (isHatchMode) originalArchiveSize else 0L,
-                        journalLogs = journalLogs.toList(),
+                        journalLogs = journalSnapshot,
                         outputDirectory = finalDisplayDir,
                         startTime = startTime,
-                        elapsedTimeMs = System.currentTimeMillis() - startTime
+                        elapsedTimeMs = (endNow - startTime - pausedMs).coerceAtLeast(0L),
+                        isPauseSupported = pauseController?.isPauseSupported ?: true
                     )
                 )
             }
         } catch (ce: kotlinx.coroutines.CancellationException) {
             activeEntryTargetOut?.let { quarantineOutputFile(it.localFile, context, it.documentUri) }
             throw ce
-        } catch (t: SimulatedFaultException) {
-            throw t
         } catch (pwdEx: PasswordRequiredException) {
             activeEntryTargetOut?.let { quarantineOutputFile(it.localFile, context, it.documentUri) }
             logJournal("7Z ERROR: Archive password required")
-            emit(
+            send(
                 ExtractionProgress(
                     archiveName = archiveName,
                     isHatchMode = isHatchMode,
                     isZeroCopySaf = isZeroCopySaf,
                     status = ExtractionStatus.ERROR,
                     errorMessage = "This .7z archive is encrypted. Please enter the archive password.",
-                    journalLogs = journalLogs.toList()
+                    journalLogs = journalSnapshot
                 )
             )
         } catch (t: Throwable) {
@@ -1220,7 +1273,7 @@ object KaiHatchEngine {
                     logJournal("  $line")
                 }
             }
-            emit(
+            send(
                 ExtractionProgress(
                     archiveName = archiveName,
                     isHatchMode = isHatchMode,
@@ -1232,7 +1285,7 @@ object KaiHatchEngine {
                     completedEntries = completedCount,
                     currentArchiveBytesOnDisk = currentDiskBytes,
                     bytesReclaimed = bytesReclaimed,
-                    journalLogs = journalLogs.toList(),
+                    journalLogs = journalSnapshot,
                     bytesExtracted = bytesExtracted,
                     totalUncompressedBytes = totalUncompressedBytes,
                     originalArchiveBytes = originalArchiveSize
@@ -1434,6 +1487,7 @@ object KaiHatchEngine {
         context: Context? = null,
         targetTreeUri: Uri? = null,
         targetFolderDocUri: Uri? = null,
+        pauseController: ExtractionPauseController? = null,
         onFinalTruncateDelete: () -> Unit
     ): Flow<ExtractionProgress> = channelFlow {
         val startTime = System.currentTimeMillis()
@@ -1461,6 +1515,12 @@ object KaiHatchEngine {
             fileDescriptor,
             (originalArchiveSize - initialReclaimedBytes).coerceAtLeast(0L)
         )
+        var diskBytesVolatile = currentDiskBytes
+        var reclaimedBytesVolatile = bytesReclaimed
+        val activeFileNameRef = AtomicReference("")
+        val activeFileProcessedRef = AtomicLong(0L)
+        val activeFileTotalRef = AtomicLong(0L)
+        val activeFileCrcRef = AtomicLong(0L)
 
         val journalLock = Any()
         val journalLogs = mutableListOf<String>()
@@ -1580,6 +1640,60 @@ object KaiHatchEngine {
             logJournal("STANDARD MODE: Parallel extraction (${orderedEntries.size} entries • $maxWorkers worker threads)")
         }
 
+        fun buildSnapshotProgress(
+            status: ExtractionStatus,
+            entryName: String = activeFileNameRef.get(),
+            entryWritten: Long = activeFileProcessedRef.get(),
+            entryTotal: Long = activeFileTotalRef.get(),
+            entryCrc: Long = activeFileCrcRef.get(),
+            diskBytesNow: Long = diskBytesVolatile,
+            reclaimedNow: Long = reclaimedBytesVolatile,
+            speedNow: Long = atomicCurrentSpeed.get(),
+            nowMs: Long = System.currentTimeMillis()
+        ): ExtractionProgress {
+            val pausedMs = pauseController?.totalPausedDurationMs(nowMs) ?: 0L
+            return ExtractionProgress(
+                archiveName = archiveName,
+                isHatchMode = isHatchMode,
+                isZeroCopySaf = isZeroCopySaf,
+                isZip64 = isZip64,
+                status = status,
+                totalEntries = totalEntriesCount,
+                completedEntries = atomicCompletedCount.get(),
+                currentFileName = entryName,
+                currentFileBytesProcessed = entryWritten,
+                currentFileTotalBytes = entryTotal,
+                totalUncompressedBytes = totalUncompressedBytes,
+                currentEntryCrc = entryCrc,
+                isCrcValid = true,
+                originalArchiveBytes = originalArchiveSize,
+                currentArchiveBytesOnDisk = diskBytesNow,
+                bytesExtracted = atomicBytesExtracted.get(),
+                bytesReclaimed = reclaimedNow,
+                bytesPerSecond = speedNow,
+                journalLogs = journalSnapshot,
+                outputDirectory = displayDir,
+                startTime = startTime,
+                elapsedTimeMs = (nowMs - startTime - pausedMs).coerceAtLeast(0L)
+            )
+        }
+
+        pauseController?.onPauseRequested = {
+            trySend(buildSnapshotProgress(status = ExtractionStatus.PAUSING, speedNow = 0L))
+        }
+        pauseController?.onPauseAcknowledged = {
+            atomicCurrentSpeed.set(0L)
+            logJournal("PAUSED: Extraction suspended at safe checkpoint (${atomicCompletedCount.get()}/$totalEntriesCount entries)")
+            trySend(buildSnapshotProgress(status = ExtractionStatus.PAUSED, speedNow = 0L))
+        }
+        pauseController?.onResumed = {
+            val nowResumed = System.currentTimeMillis()
+            atomicLastSpeedCalcTime.set(nowResumed)
+            atomicBytesSinceSpeedCheck.set(0L)
+            logJournal("RESUMED: Extraction continuing from checkpoint")
+            trySend(buildSnapshotProgress(status = ExtractionStatus.EXTRACTING, nowMs = nowResumed))
+        }
+
         fun updateSpeedAndMaybeEmit(
             entryName: String,
             entryWritten: Long,
@@ -1589,6 +1703,15 @@ object KaiHatchEngine {
             reclaimedNow: Long = bytesReclaimed,
             forceEmit: Boolean = false
         ) {
+            activeFileNameRef.set(entryName)
+            activeFileProcessedRef.set(entryWritten)
+            activeFileTotalRef.set(entryTotal)
+            activeFileCrcRef.set(entryCrc)
+            diskBytesVolatile = diskBytesNow
+            reclaimedBytesVolatile = reclaimedNow
+
+            if (pauseController?.isPaused == true) return
+
             val now = System.currentTimeMillis()
             val prevSpeedTime = atomicLastSpeedCalcTime.get()
             if (now - prevSpeedTime >= 300L && atomicLastSpeedCalcTime.compareAndSet(prevSpeedTime, now)) {
@@ -1599,36 +1722,28 @@ object KaiHatchEngine {
             val prevEmit = atomicLastEmitTime.get()
             if (forceEmit || (now - prevEmit >= 160L && atomicLastEmitTime.compareAndSet(prevEmit, now))) {
                 if (forceEmit) atomicLastEmitTime.set(now)
+                val effectiveStatus = if (pauseController?.isPausing == true) {
+                    ExtractionStatus.PAUSING
+                } else {
+                    ExtractionStatus.EXTRACTING
+                }
                 trySend(
-                    ExtractionProgress(
-                        archiveName = archiveName,
-                        isHatchMode = isHatchMode,
-                        isZeroCopySaf = isZeroCopySaf,
-                        isZip64 = isZip64,
-                        status = ExtractionStatus.EXTRACTING,
-                        totalEntries = totalEntriesCount,
-                        completedEntries = atomicCompletedCount.get(),
-                        currentFileName = entryName,
-                        currentFileBytesProcessed = entryWritten,
-                        currentFileTotalBytes = entryTotal,
-                        totalUncompressedBytes = totalUncompressedBytes,
-                        currentEntryCrc = entryCrc,
-                        isCrcValid = true,
-                        originalArchiveBytes = originalArchiveSize,
-                        currentArchiveBytesOnDisk = diskBytesNow,
-                        bytesExtracted = atomicBytesExtracted.get(),
-                        bytesReclaimed = reclaimedNow,
-                        bytesPerSecond = atomicCurrentSpeed.get(),
-                        journalLogs = journalSnapshot,
-                        outputDirectory = displayDir,
-                        startTime = startTime,
-                        elapsedTimeMs = now - startTime
+                    buildSnapshotProgress(
+                        status = effectiveStatus,
+                        entryName = entryName,
+                        entryWritten = entryWritten,
+                        entryTotal = entryTotal,
+                        entryCrc = entryCrc,
+                        diskBytesNow = diskBytesNow,
+                        reclaimedNow = reclaimedNow,
+                        speedNow = if (effectiveStatus == ExtractionStatus.PAUSING) 0L else atomicCurrentSpeed.get(),
+                        nowMs = now
                     )
                 )
             }
         }
 
-        fun extractSingleEntryPositional(
+        suspend fun extractSingleEntryPositional(
             entryIdx: Int,
             entry: ZipEntryInfo
         ): SingleEntryOutcome {
@@ -1775,7 +1890,11 @@ object KaiHatchEngine {
                                 entryName = entry.name,
                                 entryWritten = entryBytesWritten,
                                 entryTotal = entry.uncompressedSize,
-                                entryCrc = entry.crc32
+                                entryCrc = entry.crc32,
+                                forceEmit = orderedEntries.size <= 16 && entryBytesWritten == read.toLong()
+                            )
+                            pauseController?.checkpoint(
+                                flushBeforePause = { outputStream.flush() }
                             )
                         }
                     } else {
@@ -1811,7 +1930,11 @@ object KaiHatchEngine {
                                         entryName = entry.name,
                                         entryWritten = entryBytesWritten,
                                         entryTotal = entry.uncompressedSize,
-                                        entryCrc = entry.crc32
+                                        entryCrc = entry.crc32,
+                                        forceEmit = orderedEntries.size <= 16 && entryBytesWritten == decompressed.toLong()
+                                    )
+                                    pauseController?.checkpoint(
+                                        flushBeforePause = { outputStream.flush() }
                                     )
                                 } else if (inflater.needsInput() && compressedRemaining <= 0L) {
                                     break
@@ -1951,6 +2074,7 @@ object KaiHatchEngine {
         val fatalError = AtomicReference<String?>(null)
 
         for ((winIdx, window) in executionWindows.withIndex()) {
+            pauseController?.checkpoint()
             if (!coroutineContext.isActive) {
                 send(
                     ExtractionProgress(
@@ -2085,109 +2209,123 @@ object KaiHatchEngine {
                         val sliceCrcRecords = ArrayList<SliceCrcRecord>(16)
                         var shortReadError: String? = null
 
-                        RandomAccessFile(destFile, "rw").use { destRaf ->
-                            var sliceEnd = if (destFile.exists() && destFile.length() == entry.uncompressedSize && availableInArchive in 1L until entry.uncompressedSize) {
-                                availableInArchive
-                            } else {
-                                entry.uncompressedSize
-                            }
-
-                            while (sliceEnd > 0L && coroutineContext.isActive) {
-                                val sliceStart = (sliceEnd - chunkStep).coerceAtLeast(0L)
-                                var posInSlice = sliceStart
-                                val sliceCrc = CRC32()
-                                destRaf.seek(sliceStart)
-
-                                while (posInSlice < sliceEnd && coroutineContext.isActive) {
-                                    val toRead = (sliceEnd - posInSlice).coerceAtMost(sharedIoBuffer.size.toLong()).toInt()
-                                    sharedByteBuf.clear()
-                                    sharedByteBuf.limit(toRead)
-                                    val read = readChannelAtPosition(channel, sharedByteBuf, payloadOffset + posInSlice)
-                                    if (read <= 0) break
-
-                                    destRaf.write(sharedIoBuffer, 0, read)
-                                    sliceCrc.update(sharedIoBuffer, 0, read)
-                                    posInSlice += read
-                                    entryBytesWritten += read
-                                    atomicBytesExtracted.addAndGet(read.toLong())
-                                    atomicBytesSinceSpeedCheck.addAndGet(read.toLong())
-
-                                    updateSpeedAndMaybeEmit(
-                                        entryName = entry.name,
-                                        entryWritten = entryBytesWritten,
-                                        entryTotal = entry.uncompressedSize,
-                                        entryCrc = entry.crc32,
-                                        diskBytesNow = currentDiskBytes,
-                                        reclaimedNow = bytesReclaimed
-                                    )
+                        try {
+                            RandomAccessFile(destFile, "rw").use { destRaf ->
+                                var sliceEnd = if (destFile.exists() && destFile.length() == entry.uncompressedSize && availableInArchive in 1L until entry.uncompressedSize) {
+                                    availableInArchive
+                                } else {
+                                    entry.uncompressedSize
                                 }
 
-                                if (posInSlice < sliceEnd && coroutineContext.isActive) {
-                                    shortReadError = "Short read in STORED entry '${entry.name}' at slice [$sliceStart..$sliceEnd): read ${posInSlice - sliceStart} of ${sliceEnd - sliceStart} bytes"
-                                    break
-                                }
+                                while (sliceEnd > 0L && coroutineContext.isActive) {
+                                    val sliceStart = (sliceEnd - chunkStep).coerceAtLeast(0L)
+                                    var posInSlice = sliceStart
+                                    val sliceCrc = CRC32()
+                                    destRaf.seek(sliceStart)
 
-                                sliceCrcRecords.add(
-                                    SliceCrcRecord(
-                                        sliceStart = sliceStart,
-                                        sliceLen = sliceEnd - sliceStart,
-                                        crc32 = sliceCrc.value
-                                    )
-                                )
+                                    while (posInSlice < sliceEnd && coroutineContext.isActive) {
+                                        val toRead = (sliceEnd - posInSlice).coerceAtMost(sharedIoBuffer.size.toLong()).toInt()
+                                        sharedByteBuf.clear()
+                                        sharedByteBuf.limit(toRead)
+                                        val read = readChannelAtPosition(channel, sharedByteBuf, payloadOffset + posInSlice)
+                                        if (read <= 0) break
 
-                                // Ensure slice bytes are durably synced to destFile before truncating archive!
-                                try {
-                                    destRaf.fd.sync()
-                                } catch (_: Throwable) {
-                                }
+                                        destRaf.write(sharedIoBuffer, 0, read)
+                                        sliceCrc.update(sharedIoBuffer, 0, read)
+                                        posInSlice += read
+                                        entryBytesWritten += read
+                                        atomicBytesExtracted.addAndGet(read.toLong())
+                                        atomicBytesSinceSpeedCheck.addAndGet(read.toLong())
 
-                                // For intermediate slices (sliceStart > 0L), truncate down to payloadOffset + sliceStart.
-                                // For the final slice (sliceStart == 0L), verify full-file CRC32 BEFORE truncating the final slice!
-                                if (sliceStart > 0L) {
-                                    val targetTruncate = payloadOffset + sliceStart
-                                    if (targetTruncate in 0L until currentDiskBytes) {
-                                        val oldLen = currentDiskBytes
-                                        val freedSlice = (oldLen - targetTruncate).coerceAtLeast(0L)
-                                        commitJournalCheckpoint(
-                                            targetArchiveBytes = targetTruncate,
-                                            reclaimedBytes = bytesReclaimed + freedSlice,
-                                            detail = "stored_slice_${entry.name}_$sliceStart",
-                                            notifyFaultPoint = false
+                                        updateSpeedAndMaybeEmit(
+                                            entryName = entry.name,
+                                            entryWritten = entryBytesWritten,
+                                            entryTotal = entry.uncompressedSize,
+                                            entryCrc = entry.crc32,
+                                            diskBytesNow = currentDiskBytes,
+                                            reclaimedNow = bytesReclaimed
                                         )
-                                        faultInjector.onPoint(
-                                            DestructivePoint.BEFORE_STORED_SLICE_TRUNCATE,
-                                            oldLen,
-                                            "entry=${entry.name},sliceStart=$sliceStart,target=$targetTruncate"
+                                        pauseController?.checkpoint(
+                                            flushBeforePause = {
+                                                try {
+                                                    destRaf.fd.sync()
+                                                } catch (_: Throwable) {
+                                                }
+                                            }
                                         )
-                                        if (truncateDescriptor(channel, fileDescriptor, targetTruncate)) {
-                                            payloadConsumedInPlace = true
-                                            bytesReclaimed += freedSlice
-                                            currentDiskBytes = targetTruncate
-                                            faultInjector.onPhysicalTruncate(
-                                                DestructivePoint.AFTER_STORED_SLICE_TRUNCATE,
-                                                oldLen,
-                                                currentDiskBytes
+                                    }
+
+                                    if (posInSlice < sliceEnd && coroutineContext.isActive) {
+                                        shortReadError = "Short read in STORED entry '${entry.name}' at slice [$sliceStart..$sliceEnd): read ${posInSlice - sliceStart} of ${sliceEnd - sliceStart} bytes"
+                                        break
+                                    }
+
+                                    sliceCrcRecords.add(
+                                        SliceCrcRecord(
+                                            sliceStart = sliceStart,
+                                            sliceLen = sliceEnd - sliceStart,
+                                            crc32 = sliceCrc.value
+                                        )
+                                    )
+
+                                    // Ensure slice bytes are durably synced to destFile before truncating archive!
+                                    try {
+                                        destRaf.fd.sync()
+                                    } catch (_: Throwable) {
+                                    }
+
+                                    // For intermediate slices (sliceStart > 0L), truncate down to payloadOffset + sliceStart.
+                                    // For the final slice (sliceStart == 0L), verify full-file CRC32 BEFORE truncating the final slice!
+                                    if (sliceStart > 0L) {
+                                        val targetTruncate = payloadOffset + sliceStart
+                                        if (targetTruncate in 0L until currentDiskBytes) {
+                                            val oldLen = currentDiskBytes
+                                            val freedSlice = (oldLen - targetTruncate).coerceAtLeast(0L)
+                                            commitJournalCheckpoint(
+                                                targetArchiveBytes = targetTruncate,
+                                                reclaimedBytes = bytesReclaimed + freedSlice,
+                                                detail = "stored_slice_${entry.name}_$sliceStart",
+                                                notifyFaultPoint = false
                                             )
                                             faultInjector.onPoint(
-                                                DestructivePoint.AFTER_STORED_SLICE_TRUNCATE,
-                                                currentDiskBytes,
-                                                "entry=${entry.name},sliceStart=$sliceStart"
+                                                DestructivePoint.BEFORE_STORED_SLICE_TRUNCATE,
+                                                oldLen,
+                                                "entry=${entry.name},sliceStart=$sliceStart,target=$targetTruncate"
                                             )
-                                            logJournal("ftruncate($targetTruncate): Reclaimed ${formatSize(freedSlice)} -> Archive: ${formatSize(currentDiskBytes)}")
-                                            updateSpeedAndMaybeEmit(
-                                                entryName = entry.name,
-                                                entryWritten = entryBytesWritten,
-                                                entryTotal = entry.uncompressedSize,
-                                                entryCrc = entry.crc32,
-                                                diskBytesNow = currentDiskBytes,
-                                                reclaimedNow = bytesReclaimed,
-                                                forceEmit = true
-                                            )
+                                            if (truncateDescriptor(channel, fileDescriptor, targetTruncate)) {
+                                                payloadConsumedInPlace = true
+                                                bytesReclaimed += freedSlice
+                                                currentDiskBytes = targetTruncate
+                                                faultInjector.onPhysicalTruncate(
+                                                    DestructivePoint.AFTER_STORED_SLICE_TRUNCATE,
+                                                    oldLen,
+                                                    currentDiskBytes
+                                                )
+                                                faultInjector.onPoint(
+                                                    DestructivePoint.AFTER_STORED_SLICE_TRUNCATE,
+                                                    currentDiskBytes,
+                                                    "entry=${entry.name},sliceStart=$sliceStart"
+                                                )
+                                                logJournal("ftruncate($targetTruncate): Reclaimed ${formatSize(freedSlice)} -> Archive: ${formatSize(currentDiskBytes)}")
+                                                updateSpeedAndMaybeEmit(
+                                                    entryName = entry.name,
+                                                    entryWritten = entryBytesWritten,
+                                                    entryTotal = entry.uncompressedSize,
+                                                    entryCrc = entry.crc32,
+                                                    diskBytesNow = currentDiskBytes,
+                                                    reclaimedNow = bytesReclaimed,
+                                                    forceEmit = true
+                                                )
+                                            }
                                         }
                                     }
+                                    sliceEnd = sliceStart
+                                    pauseController?.checkpoint()
                                 }
-                                sliceEnd = sliceStart
                             }
+                        } catch (ce: kotlinx.coroutines.CancellationException) {
+                            quarantineOutputFile(destFile)
+                            throw ce
                         }
 
                         if (shortReadError != null) {
@@ -2559,6 +2697,15 @@ object KaiHatchEngine {
                                                     diskBytesNow = currentDiskBytes,
                                                     reclaimedNow = bytesReclaimed
                                                 )
+                                                pauseController?.checkpoint(
+                                                    flushBeforePause = {
+                                                        outputStream.flush()
+                                                        try {
+                                                            rawFileOut?.fd?.sync()
+                                                        } catch (_: Throwable) {
+                                                        }
+                                                    }
+                                                )
                                             } else if (inflater.finished() || inflater.needsDictionary()) {
                                                 break
                                             } else if (inflater.needsInput() && activeChunkOffset >= activeChunkLimit) {
@@ -2760,6 +2907,7 @@ object KaiHatchEngine {
                                             reclaimedNow = bytesReclaimed,
                                             forceEmit = true
                                         )
+                                        pauseController?.checkpoint()
                                     }
                                 } finally {
                                     inflater.end()
@@ -2934,6 +3082,7 @@ object KaiHatchEngine {
                         elapsedTimeMs = nowAfterTrunc - startTime
                     )
                 )
+                pauseController?.checkpoint()
                 continue
             }
 
@@ -2958,71 +3107,82 @@ object KaiHatchEngine {
                 val windowCompleted = BooleanArray(window.size)
                 var windowWatermark = 0
                 val activeWorkers = minOf(maxWorkers, window.size)
-
-                coroutineScope {
-                    repeat(activeWorkers) {
-                        launch(workerDispatcher) {
-                            while (isActive && fatalError.get() == null) {
-                                val localIdx = workQueueIndex.getAndIncrement()
-                                if (localIdx >= window.size) break
-                                val item = window[localIdx]
-                                val res = extractSingleEntryPositional(
-                                    entryIdx = item.index,
-                                    entry = item.entry
-                                )
-                                if (res is SingleEntryOutcome.Error) {
-                                    fatalError.compareAndSet(null, res.message)
-                                    break
-                                } else {
-                                    synchronized(outcomeLock) {
-                                        outcomes.add(res)
-                                        if (res is SingleEntryOutcome.Success && res.isCrcMatch) {
-                                            windowCompleted[localIdx] = true
-                                            if (isHatchMode && localIdx == windowWatermark) {
-                                                var latestOffset = currentDiskBytes
-                                                while (windowWatermark < window.size && windowCompleted[windowWatermark]) {
-                                                    latestOffset = minOf(latestOffset, window[windowWatermark].entry.localHeaderOffset)
-                                                    windowWatermark++
-                                                }
-                                                if (latestOffset in 0L until currentDiskBytes) {
-                                                    val oldLen = currentDiskBytes
-                                                    val pendingFreed = (oldLen - latestOffset).coerceAtLeast(0L)
-                                                    // Durably commit journal checkpoint BEFORE truncating watermark!
-                                                    commitJournalCheckpoint(
-                                                        targetArchiveBytes = latestOffset,
-                                                        reclaimedBytes = bytesReclaimed + pendingFreed,
-                                                        detail = "watermark=$latestOffset"
-                                                    )
-                                                    faultInjector.onPoint(DestructivePoint.BEFORE_WINDOW_TRUNCATE, oldLen, "watermark=$latestOffset")
-                                                    if (truncateDescriptor(channel, fileDescriptor, latestOffset)) {
-                                                        payloadConsumedInPlace = true
-                                                        val freedNow = (oldLen - latestOffset).coerceAtLeast(0L)
-                                                        bytesReclaimed += freedNow
-                                                        currentDiskBytes = latestOffset
-                                                        faultInjector.onPhysicalTruncate(DestructivePoint.BEFORE_WINDOW_TRUNCATE, oldLen, currentDiskBytes)
-                                                        faultInjector.onPoint(DestructivePoint.AFTER_WINDOW_TRUNCATE_BEFORE_JOURNAL, currentDiskBytes, "watermark=$latestOffset")
-                                                        watermarkAlreadyLogged = true
-                                                        if (executionWindows.size <= 250 || winIdx % 10 == 0 || freedNow >= 512 * 1024) {
-                                                            logJournal("ftruncate($latestOffset): Reclaimed ${formatSize(freedNow)} -> Archive: ${formatSize(currentDiskBytes)}")
+                pauseController?.setActiveWorkerCount(activeWorkers)
+                try {
+                    coroutineScope {
+                        repeat(activeWorkers) {
+                            launch(workerDispatcher) {
+                                try {
+                                    while (isActive && fatalError.get() == null) {
+                                        val localIdx = workQueueIndex.getAndIncrement()
+                                        if (localIdx >= window.size) break
+                                        val item = window[localIdx]
+                                        val res = extractSingleEntryPositional(
+                                            entryIdx = item.index,
+                                            entry = item.entry
+                                        )
+                                        if (res is SingleEntryOutcome.Error) {
+                                            fatalError.compareAndSet(null, res.message)
+                                            break
+                                        } else {
+                                            synchronized(outcomeLock) {
+                                                outcomes.add(res)
+                                                if (res is SingleEntryOutcome.Success && res.isCrcMatch) {
+                                                    windowCompleted[localIdx] = true
+                                                    if (isHatchMode && localIdx == windowWatermark) {
+                                                        var latestOffset = currentDiskBytes
+                                                        while (windowWatermark < window.size && windowCompleted[windowWatermark]) {
+                                                            latestOffset = minOf(latestOffset, window[windowWatermark].entry.localHeaderOffset)
+                                                            windowWatermark++
                                                         }
-                                                        updateSpeedAndMaybeEmit(
-                                                            entryName = item.entry.name,
-                                                            entryWritten = item.entry.uncompressedSize,
-                                                            entryTotal = item.entry.uncompressedSize,
-                                                            entryCrc = item.entry.crc32,
-                                                            diskBytesNow = currentDiskBytes,
-                                                            reclaimedNow = bytesReclaimed,
-                                                            forceEmit = true
-                                                        )
+                                                        if (latestOffset in 0L until currentDiskBytes) {
+                                                            val oldLen = currentDiskBytes
+                                                            val pendingFreed = (oldLen - latestOffset).coerceAtLeast(0L)
+                                                            // Durably commit journal checkpoint BEFORE truncating watermark!
+                                                            commitJournalCheckpoint(
+                                                                targetArchiveBytes = latestOffset,
+                                                                reclaimedBytes = bytesReclaimed + pendingFreed,
+                                                                detail = "watermark=$latestOffset"
+                                                            )
+                                                            faultInjector.onPoint(DestructivePoint.BEFORE_WINDOW_TRUNCATE, oldLen, "watermark=$latestOffset")
+                                                            if (truncateDescriptor(channel, fileDescriptor, latestOffset)) {
+                                                                payloadConsumedInPlace = true
+                                                                val freedNow = (oldLen - latestOffset).coerceAtLeast(0L)
+                                                                bytesReclaimed += freedNow
+                                                                currentDiskBytes = latestOffset
+                                                                diskBytesVolatile = currentDiskBytes
+                                                                reclaimedBytesVolatile = bytesReclaimed
+                                                                faultInjector.onPhysicalTruncate(DestructivePoint.BEFORE_WINDOW_TRUNCATE, oldLen, currentDiskBytes)
+                                                                faultInjector.onPoint(DestructivePoint.AFTER_WINDOW_TRUNCATE_BEFORE_JOURNAL, currentDiskBytes, "watermark=$latestOffset")
+                                                                watermarkAlreadyLogged = true
+                                                                if (executionWindows.size <= 250 || winIdx % 10 == 0 || freedNow >= 512 * 1024) {
+                                                                    logJournal("ftruncate($latestOffset): Reclaimed ${formatSize(freedNow)} -> Archive: ${formatSize(currentDiskBytes)}")
+                                                                }
+                                                                updateSpeedAndMaybeEmit(
+                                                                    entryName = item.entry.name,
+                                                                    entryWritten = item.entry.uncompressedSize,
+                                                                    entryTotal = item.entry.uncompressedSize,
+                                                                    entryCrc = item.entry.crc32,
+                                                                    diskBytesNow = currentDiskBytes,
+                                                                    reclaimedNow = bytesReclaimed,
+                                                                    forceEmit = true
+                                                                )
+                                                            }
+                                                        }
                                                     }
                                                 }
                                             }
+                                            pauseController?.checkpoint()
                                         }
                                     }
+                                } finally {
+                                    pauseController?.onWorkerExitedSafeZone()
                                 }
                             }
                         }
                     }
+                } finally {
+                    pauseController?.setActiveWorkerCount(1)
                 }
             }
 
@@ -3123,6 +3283,8 @@ object KaiHatchEngine {
                     val nowAfterTrunc = System.currentTimeMillis()
                     if (freed > 0L || nowAfterTrunc - atomicLastEmitTime.get() >= 160L || winIdx == executionWindows.lastIndex || executionWindows.size <= 16) {
                         atomicLastEmitTime.set(nowAfterTrunc)
+                        diskBytesVolatile = newLen
+                        reclaimedBytesVolatile = bytesReclaimed
                         trySend(
                             ExtractionProgress(
                                 archiveName = archiveName,
@@ -3152,6 +3314,7 @@ object KaiHatchEngine {
                     }
                 }
             }
+            pauseController?.checkpoint()
         }
 
         val finalCompletedCount = atomicCompletedCount.get()
@@ -3174,6 +3337,10 @@ object KaiHatchEngine {
         val finalDisplayDir = if (context != null && targetTreeUri != null) {
             StorageHelper.getGrantedFolderInfo(context)?.let { "${it.displayName}/${targetDir.name}" } ?: targetDir.absolutePath
         } else targetDir.absolutePath
+
+        pauseController?.onPauseRequested = null
+        pauseController?.onPauseAcknowledged = null
+        pauseController?.onResumed = null
 
         send(
             ExtractionProgress(
@@ -3325,8 +3492,9 @@ object KaiHatchEngine {
         context: Context? = null,
         targetTreeUri: Uri? = null,
         targetFolderDocUri: Uri? = null,
+        pauseController: ExtractionPauseController? = null,
         onDeleteSource: () -> Unit
-    ): Flow<ExtractionProgress> = flow {
+    ): Flow<ExtractionProgress> = channelFlow {
         val startTime = System.currentTimeMillis()
         val logs = mutableListOf("[00:00] Decompressing GZIP TAR stream...")
         val displayDir = if (targetTreeUri != null && context != null) {
@@ -3338,8 +3506,49 @@ object KaiHatchEngine {
 
         var bytesExtracted = 0L
         var filesCount = 0
+        var currentEntryName = ""
+        var currentEntryProcessed = 0L
+        var currentEntryTotal = 0L
         var activeTargetOut: TargetOutput? = null
         val streamExtractedOutputs = mutableListOf<TargetOutput>()
+
+        fun buildTarGzSnapshot(status: ExtractionStatus): ExtractionProgress {
+            val now = System.currentTimeMillis()
+            val pausedMs = pauseController?.totalPausedDurationMs(now) ?: 0L
+            return ExtractionProgress(
+                archiveName = archiveName,
+                isHatchMode = false,
+                status = status,
+                totalEntries = (filesCount + 1).coerceAtLeast(1),
+                completedEntries = filesCount,
+                currentFileName = currentEntryName,
+                currentFileBytesProcessed = currentEntryProcessed,
+                currentFileTotalBytes = currentEntryTotal,
+                originalArchiveBytes = originalArchiveSize,
+                currentArchiveBytesOnDisk = originalArchiveSize,
+                bytesExtracted = bytesExtracted,
+                journalLogs = synchronized(logs) { logs.toList() },
+                outputDirectory = displayDir,
+                startTime = startTime,
+                elapsedTimeMs = (now - startTime - pausedMs).coerceAtLeast(0L)
+            )
+        }
+
+        pauseController?.onPauseRequested = {
+            trySend(buildTarGzSnapshot(ExtractionStatus.PAUSING))
+        }
+        pauseController?.onPauseAcknowledged = {
+            synchronized(logs) {
+                logs.add("PAUSED: TAR.GZ stream suspended at safe checkpoint")
+            }
+            trySend(buildTarGzSnapshot(ExtractionStatus.PAUSED))
+        }
+        pauseController?.onResumed = {
+            synchronized(logs) {
+                logs.add("RESUMED: TAR.GZ stream continuing")
+            }
+            trySend(buildTarGzSnapshot(ExtractionStatus.EXTRACTING))
+        }
 
         try {
             GZIPInputStream(BufferedInputStream(openStream())).use { gzIn ->
@@ -3347,6 +3556,7 @@ object KaiHatchEngine {
                 val buffer = ByteArray(32 * 1024)
 
                 while (coroutineContext.isActive) {
+                    pauseController?.checkpoint()
                     var rTotal = 0
                     while (rTotal < 512) {
                         val r = gzIn.read(block, rTotal, 512 - rTotal)
@@ -3396,6 +3606,9 @@ object KaiHatchEngine {
                             }
                         }
                     } else {
+                        currentEntryName = name.substringAfterLast('/')
+                        currentEntryProcessed = 0L
+                        currentEntryTotal = entrySize
                         val targetOut = if (shouldExtract) {
                             StorageHelper.openTargetOutput(
                                 context = context,
@@ -3416,7 +3629,11 @@ object KaiHatchEngine {
                                 if (r <= 0) break
                                 targetOut?.outputStream?.write(buffer, 0, r)
                                 rem -= r
+                                currentEntryProcessed += r
                                 if (shouldExtract) bytesExtracted += r
+                                pauseController?.checkpoint(
+                                    flushBeforePause = { targetOut?.outputStream?.flush() }
+                                )
                             }
                             targetOut?.outputStream?.flush()
                         } finally {
@@ -3443,8 +3660,10 @@ object KaiHatchEngine {
                         }
                         if (shouldExtract) {
                             filesCount++
-                            logs.add("Extracted TAR.GZ entry: $name (${formatSize(entrySize)})")
-                            emit(
+                            synchronized(logs) {
+                                logs.add("Extracted TAR.GZ entry: $name (${formatSize(entrySize)})")
+                            }
+                            send(
                                 ExtractionProgress(
                                     archiveName = archiveName,
                                     isHatchMode = false,
@@ -3457,20 +3676,26 @@ object KaiHatchEngine {
                                     originalArchiveBytes = originalArchiveSize,
                                     currentArchiveBytesOnDisk = originalArchiveSize,
                                     bytesExtracted = bytesExtracted,
-                                    journalLogs = logs.toList(),
+                                    journalLogs = synchronized(logs) { logs.toList() },
                                     outputDirectory = displayDir,
                                     startTime = startTime,
                                     elapsedTimeMs = System.currentTimeMillis() - startTime
                                 )
                             )
+                            pauseController?.checkpoint()
                         }
                     }
                 }
             }
 
             onDeleteSource()
-            logs.add("COMPLETE: Unpacked $filesCount files from $archiveName")
-            emit(
+            synchronized(logs) {
+                logs.add("COMPLETE: Unpacked $filesCount files from $archiveName")
+            }
+            pauseController?.onPauseRequested = null
+            pauseController?.onPauseAcknowledged = null
+            pauseController?.onResumed = null
+            send(
                 ExtractionProgress(
                     archiveName = archiveName,
                     isHatchMode = false,
@@ -3481,16 +3706,22 @@ object KaiHatchEngine {
                     originalArchiveBytes = originalArchiveSize,
                     currentArchiveBytesOnDisk = originalArchiveSize,
                     bytesExtracted = bytesExtracted,
-                    journalLogs = logs.toList(),
+                    journalLogs = synchronized(logs) { logs.toList() },
                     outputDirectory = displayDir,
                     startTime = startTime,
                     elapsedTimeMs = System.currentTimeMillis() - startTime
                 )
             )
         } catch (ce: kotlinx.coroutines.CancellationException) {
+            pauseController?.onPauseRequested = null
+            pauseController?.onPauseAcknowledged = null
+            pauseController?.onResumed = null
             activeTargetOut?.let { quarantineOutputFile(it.localFile, context, it.documentUri) }
             throw ce
         } catch (t: Throwable) {
+            pauseController?.onPauseRequested = null
+            pauseController?.onPauseAcknowledged = null
+            pauseController?.onResumed = null
             activeTargetOut?.let { quarantineOutputFile(it.localFile, context, it.documentUri) }
             for (unverifiedOut in streamExtractedOutputs) {
                 quarantineOutputFile(unverifiedOut.localFile, context, unverifiedOut.documentUri)
@@ -3504,8 +3735,10 @@ object KaiHatchEngine {
                 verifiedFilesCount = filesCount
             )
             val errMsg = "TAR.GZ integrity error: ${t.localizedMessage ?: t.message ?: t.javaClass.simpleName} [$stateDesc]"
-            logs.add("ERROR: $errMsg")
-            emit(
+            synchronized(logs) {
+                logs.add("ERROR: $errMsg")
+            }
+            send(
                 ExtractionProgress(
                     archiveName = archiveName,
                     isHatchMode = false,
@@ -3516,7 +3749,7 @@ object KaiHatchEngine {
                     originalArchiveBytes = originalArchiveSize,
                     currentArchiveBytesOnDisk = originalArchiveSize,
                     bytesExtracted = bytesExtracted,
-                    journalLogs = logs.toList(),
+                    journalLogs = synchronized(logs) { logs.toList() },
                     outputDirectory = displayDir,
                     startTime = startTime,
                     elapsedTimeMs = System.currentTimeMillis() - startTime

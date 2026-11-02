@@ -24,8 +24,26 @@ import com.biplov.kaihatch.R
 class HatchNotificationCancelReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent?) {
         if (intent?.action == HatchNotificationHelper.ACTION_CANCEL_TASK) {
-            HatchNotificationHelper.onCancelRequested?.invoke()
-            HatchNotificationHelper.cancelProgressNotification(context)
+            val isExtractingNow = ArchiveJobRunner.isExtractionActive() ||
+                ArchiveJobRunner.extractionProgress.value.status.isActiveSession
+            if (isExtractingNow) {
+                // Never bypass Stop confirmation for active extraction (especially destructive Hatch Mode):
+                // request Stop confirmation in-app and bring MainActivity to foreground with the dialog open.
+                HatchNotificationHelper.onStopConfirmationRequested?.invoke()
+                try {
+                    val openIntent = Intent(context, MainActivity::class.java).apply {
+                        action = HatchNotificationHelper.ACTION_CONFIRM_STOP_FROM_NOTIFICATION
+                        flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                            Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                            Intent.FLAG_ACTIVITY_CLEAR_TOP
+                    }
+                    context.startActivity(openIntent)
+                } catch (_: Throwable) {
+                }
+            } else {
+                HatchNotificationHelper.onCancelRequested?.invoke()
+                HatchNotificationHelper.cancelProgressNotification(context)
+            }
         }
     }
 }
@@ -128,6 +146,7 @@ class HatchForegroundService : Service() {
 object HatchNotificationHelper {
 
     const val ACTION_CANCEL_TASK = "com.biplov.kaihatch.ACTION_CANCEL_TASK"
+    const val ACTION_CONFIRM_STOP_FROM_NOTIFICATION = "com.biplov.kaihatch.ACTION_CONFIRM_STOP_EXTRACTION"
 
     private const val CHANNEL_LIVE_PROGRESS_ID = "kaihatch_live_progress_channel"
     private const val CHANNEL_COMPLETION_ID = "kaihatch_completion_channel"
@@ -137,6 +156,9 @@ object HatchNotificationHelper {
 
     @Volatile
     var onCancelRequested: (() -> Unit)? = null
+
+    @Volatile
+    var onStopConfirmationRequested: (() -> Unit)? = null
 
     @Volatile
     private var lastUpdateTimestamp: Long = 0L

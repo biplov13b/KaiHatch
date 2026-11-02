@@ -11,6 +11,7 @@ import androidx.work.OutOfQuotaPolicy
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
+import com.biplov.kaihatch.engine.ExtractionPauseController
 import com.biplov.kaihatch.engine.KaiHatchEngine
 import com.biplov.kaihatch.model.CompressionProgress
 import com.biplov.kaihatch.model.ExtractionProgress
@@ -51,6 +52,10 @@ object ArchiveJobRunner {
     private var activeExtractJob: Job? = null
 
     @Volatile
+    var activePauseController: ExtractionPauseController? = null
+        private set
+
+    @Volatile
     private var activeCompressJob: Job? = null
 
     @Volatile
@@ -68,13 +73,28 @@ object ArchiveJobRunner {
 
     fun isCompressionActive(): Boolean = activeCompressJob?.isActive == true
 
+    fun pauseExtraction(): Boolean {
+        if (!isExtractionActive()) return false
+        val controller = activePauseController ?: return false
+        return controller.requestPause()
+    }
+
+    fun resumeExtraction(): Boolean {
+        if (!isExtractionActive()) return false
+        val controller = activePauseController ?: return false
+        return controller.resume()
+    }
+
     fun launchExtractionJob(
         context: Context,
         title: String,
         subtitle: String,
-        block: suspend CoroutineScope.() -> Unit
+        block: suspend CoroutineScope.(ExtractionPauseController) -> Unit
     ): Job {
+        activePauseController?.cancel()
         activeExtractJob?.cancel()
+        val pauseController = ExtractionPauseController()
+        activePauseController = pauseController
         val gate = CompletableDeferred<Unit>()
         workerCompletionGate = gate
 
@@ -83,8 +103,11 @@ object ArchiveJobRunner {
 
         val job = appScope.launch {
             try {
-                block()
+                block(pauseController)
             } finally {
+                if (activePauseController === pauseController) {
+                    activePauseController = null
+                }
                 gate.complete(Unit)
             }
         }
@@ -117,6 +140,8 @@ object ArchiveJobRunner {
     }
 
     fun cancelExtraction(context: Context) {
+        activePauseController?.cancel()
+        activePauseController = null
         activeExtractJob?.cancel()
         activeExtractJob = null
         workerCompletionGate?.complete(Unit)
@@ -205,7 +230,7 @@ class HatchArchiveWorker(
 
         val activeGate = ArchiveJobRunner.workerCompletionGate
         if (activeGate != null) {
-            // An in-memory extraction or compression job is currently running; hold the foreground lock until it finishes
+            // An in-memory extraction or compression job is currently running (or paused); hold the foreground lock until it finishes
             activeGate.await()
             return Result.success()
         }
@@ -215,27 +240,64 @@ class HatchArchiveWorker(
         val pendingJournals = ResumeJournalManager.loadPendingStates(applicationContext)
         val latestJournal = pendingJournals.firstOrNull() ?: return Result.success()
 
+        val pauseController = ExtractionPauseController()
+        ArchiveJobRunner.updateExtractionProgress(
+            ExtractionProgress(
+                archiveName = latestJournal.archiveName,
+                isHatchMode = true,
+                status = ExtractionStatus.EXTRACTING
+            )
+        )
+
         return try {
             KaiHatchEngine.resumeInterruptedExtraction(
                 context = applicationContext,
                 resumeState = latestJournal,
-                password = latestJournal.password
+                password = latestJournal.password,
+                pauseController = pauseController
             ).collect { progress ->
                 ArchiveJobRunner.updateExtractionProgress(progress)
-                if (progress.status == ExtractionStatus.EXTRACTING || progress.status == ExtractionStatus.TRUNCATING) {
-                    val countLabel = if (progress.totalEntries == 1) "1 file" else "${progress.totalEntries} files"
-                    val remainingBytes = (progress.totalUncompressedBytes - progress.bytesExtracted).coerceAtLeast(0L)
-                    val speedText = if (progress.bytesPerSecond > 0L) {
-                        "${StorageHelper.formatBytes(progress.bytesPerSecond)}/s"
-                    } else ""
-                    HatchNotificationHelper.showLiveProgressNotification(
-                        context = applicationContext,
-                        title = "Extracting $countLabel",
-                        subtitle = progress.currentFileName.substringAfterLast('/').ifEmpty { latestJournal.archiveName },
-                        detailBigText = HatchNotificationHelper.formatRemainingLine(remainingBytes, progress.bytesPerSecond),
-                        progressFraction = progress.overallProgressFraction,
-                        speedText = speedText
-                    )
+                when (progress.status) {
+                    ExtractionStatus.EXTRACTING, ExtractionStatus.TRUNCATING -> {
+                        val countLabel = if (progress.totalEntries == 1) "1 file" else "${progress.totalEntries} files"
+                        val remainingBytes = (progress.totalUncompressedBytes - progress.bytesExtracted).coerceAtLeast(0L)
+                        val speedText = if (progress.bytesPerSecond > 0L) {
+                            "${StorageHelper.formatBytes(progress.bytesPerSecond)}/s"
+                        } else ""
+                        HatchNotificationHelper.showLiveProgressNotification(
+                            context = applicationContext,
+                            title = "Extracting $countLabel",
+                            subtitle = progress.currentFileName.substringAfterLast('/').ifEmpty { latestJournal.archiveName },
+                            detailBigText = HatchNotificationHelper.formatRemainingLine(remainingBytes, progress.bytesPerSecond),
+                            progressFraction = progress.overallProgressFraction,
+                            speedText = speedText
+                        )
+                    }
+                    ExtractionStatus.PAUSING -> {
+                        val remainingBytes = (progress.totalUncompressedBytes - progress.bytesExtracted).coerceAtLeast(0L)
+                        HatchNotificationHelper.showLiveProgressNotification(
+                            context = applicationContext,
+                            title = "Pausing extraction...",
+                            subtitle = progress.currentFileName.substringAfterLast('/').ifEmpty { latestJournal.archiveName },
+                            detailBigText = "Finishing current atomic step • ${StorageHelper.formatBytes(remainingBytes)} remaining",
+                            progressFraction = progress.overallProgressFraction,
+                            speedText = "PAUSING",
+                            forceUpdate = true
+                        )
+                    }
+                    ExtractionStatus.PAUSED -> {
+                        val remainingBytes = (progress.totalUncompressedBytes - progress.bytesExtracted).coerceAtLeast(0L)
+                        HatchNotificationHelper.showLiveProgressNotification(
+                            context = applicationContext,
+                            title = "Extraction paused",
+                            subtitle = progress.currentFileName.substringAfterLast('/').ifEmpty { latestJournal.archiveName },
+                            detailBigText = "Paused at ${(progress.overallProgressFraction * 100f).toInt()}% • ${StorageHelper.formatBytes(remainingBytes)} remaining",
+                            progressFraction = progress.overallProgressFraction,
+                            speedText = "PAUSED",
+                            forceUpdate = true
+                        )
+                    }
+                    else -> {}
                 }
             }
             Result.success()

@@ -8,6 +8,7 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.SnapSpec
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
@@ -61,6 +62,7 @@ import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.FolderSpecial
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.PauseCircle
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.ReceiptLong
@@ -324,12 +326,7 @@ fun HatchExtractScreen(
     var folderPendingDeletion by remember { mutableStateOf<ExtractedFolderEntry?>(null) }
     var filePendingDeletion by remember { mutableStateOf<ExtractedFileEntry?>(null) }
 
-    val isExtractionRunning = progress.status in listOf(
-        ExtractionStatus.ANALYZING,
-        ExtractionStatus.EXTRACTING,
-        ExtractionStatus.VERIFYING_CRC,
-        ExtractionStatus.TRUNCATING
-    )
+    val isExtractionRunning = progress.status.isActiveSession
 
     val completionKey: String? = when {
         progress.status != ExtractionStatus.COMPLETED -> null
@@ -1672,12 +1669,17 @@ fun HatchExtractScreen(
 
         // STATE 3: Once Extract is hit -> Full Live Extraction HUD + Live Log Console
         if (isExtractionRunning) {
+            val isPausedOrPausing = progress.status == ExtractionStatus.PAUSED || progress.status == ExtractionStatus.PAUSING
             val animatedOverall by animateFloatAsState(
                 targetValue = progress.overallProgressFraction,
-                animationSpec = spring(
-                    dampingRatio = Spring.DampingRatioNoBouncy,
-                    stiffness = Spring.StiffnessMediumLow
-                ),
+                animationSpec = if (isPausedOrPausing) {
+                    SnapSpec()
+                } else {
+                    spring(
+                        dampingRatio = Spring.DampingRatioNoBouncy,
+                        stiffness = Spring.StiffnessMediumLow
+                    )
+                },
                 label = "overall_extract_progress"
             )
 
@@ -1698,22 +1700,39 @@ fun HatchExtractScreen(
                             modifier = Modifier.weight(1f),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(24.dp),
-                                color = primary,
-                                strokeWidth = 3.dp,
-                                strokeCap = StrokeCap.Round
-                            )
+                            if (progress.status == ExtractionStatus.PAUSED) {
+                                Icon(
+                                    imageVector = Icons.Default.PauseCircle,
+                                    contentDescription = "Extraction Paused",
+                                    tint = primary,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                            } else {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(24.dp),
+                                    color = primary,
+                                    strokeWidth = 3.dp,
+                                    strokeCap = StrokeCap.Round
+                                )
+                            }
                             Spacer(modifier = Modifier.width(10.dp))
                             Column {
                                 Text(
-                                    text = if (isHatchMode) "In-Place Unpacking & Shrinking" else "Extracting Archive...",
+                                    text = when (progress.status) {
+                                        ExtractionStatus.PAUSED -> "Extraction Paused"
+                                        ExtractionStatus.PAUSING -> "Pausing at Safe Checkpoint..."
+                                        else -> if (isHatchMode) "In-Place Unpacking & Shrinking" else "Extracting Archive..."
+                                    },
                                     fontWeight = FontWeight.ExtraBold,
                                     color = MaterialTheme.colorScheme.onSurface,
                                     fontSize = 14.sp
                                 )
                                 Text(
-                                    text = if (isHatchMode) "Making room as we go" else if (notificationsEnabled) "Background Worker & Status Bar Active" else "Background Worker Active",
+                                    text = when (progress.status) {
+                                        ExtractionStatus.PAUSED -> "Paused safely — tap Resume to continue"
+                                        ExtractionStatus.PAUSING -> "Completing current atomic chunk..."
+                                        else -> if (isHatchMode) "Making room as we go" else if (notificationsEnabled) "Background Worker & Status Bar Active" else "Background Worker Active"
+                                    },
                                     fontSize = 11.sp,
                                     color = primary
                                 )
@@ -1735,8 +1754,13 @@ fun HatchExtractScreen(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween
                     ) {
+                        val filePrefix = when (progress.status) {
+                            ExtractionStatus.PAUSED -> "PAUSED"
+                            ExtractionStatus.PAUSING -> "PAUSING"
+                            else -> "ACTIVE"
+                        }
                         Text(
-                            text = "ACTIVE: ${progress.currentFileName.ifEmpty { "Preparing..." }}",
+                            text = "$filePrefix: ${progress.currentFileName.ifEmpty { "Preparing..." }}",
                             fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onSurface,
@@ -1756,7 +1780,7 @@ fun HatchExtractScreen(
                         progress = progress.overallProgressFraction,
                         activeColor = primary,
                         trackColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-                        isWaveAnimated = true,
+                        isWaveAnimated = !isPausedOrPausing,
                         height = 14.dp,
                         modifier = Modifier.testTag("in_app_overall_progress_bar")
                     )

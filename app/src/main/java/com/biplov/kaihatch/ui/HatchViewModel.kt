@@ -147,6 +147,13 @@ class HatchViewModel(application: Application) : AndroidViewModel(application) {
     private val _pendingResumeStates = MutableStateFlow<List<ResumeJournalState>>(emptyList())
     val pendingResumeStates: StateFlow<List<ResumeJournalState>> = _pendingResumeStates.asStateFlow()
 
+    // Floating Extraction Control Expansion & Stop Confirmation Dialog State
+    private val _isFloatingControlsExpanded = MutableStateFlow(false)
+    val isFloatingControlsExpanded: StateFlow<Boolean> = _isFloatingControlsExpanded.asStateFlow()
+
+    private val _showStopConfirmDialog = MutableStateFlow(false)
+    val showStopConfirmDialog: StateFlow<Boolean> = _showStopConfirmDialog.asStateFlow()
+
     private var extractJob: Job? = null
 
     // Compression State
@@ -213,8 +220,12 @@ class HatchViewModel(application: Application) : AndroidViewModel(application) {
             _compressionProgress.value = ArchiveJobRunner.compressionProgress.value
         }
         HatchNotificationHelper.onCancelRequested = {
-            cancelExtraction()
-            cancelCompression()
+            if (ArchiveJobRunner.isCompressionActive()) {
+                cancelCompression()
+            }
+        }
+        HatchNotificationHelper.onStopConfirmationRequested = {
+            requestStopExtractionConfirmation()
         }
         viewModelScope.launch(Dispatchers.IO) {
             HatchNotificationHelper.ensureChannels(application)
@@ -554,16 +565,14 @@ class HatchViewModel(application: Application) : AndroidViewModel(application) {
     fun deselectArchive() {
         selectJob?.cancel()
         selectJob = null
-        val isExtracting = _extractionProgress.value.status in listOf(
-            ExtractionStatus.ANALYZING,
-            ExtractionStatus.EXTRACTING,
-            ExtractionStatus.VERIFYING_CRC,
-            ExtractionStatus.TRUNCATING
-        )
+        val isExtracting = _extractionProgress.value.status.isActiveSession
         if (isExtracting) {
+            ArchiveJobRunner.activePauseController?.cancel()
             extractJob?.cancel()
             HatchNotificationHelper.cancelProgressNotification(getApplication())
         }
+        _isFloatingControlsExpanded.value = false
+        _showStopConfirmDialog.value = false
         _selectedArchiveFile.value = null
         _selectedSafUri.value = null
         _archiveSummary.value = null
@@ -775,6 +784,8 @@ class HatchViewModel(application: Application) : AndroidViewModel(application) {
 
         // Immediately reflect active state so UI never lags while resolving SAF directories
         _lastCompletedTarget.value = null
+        _isFloatingControlsExpanded.value = false
+        _showStopConfirmDialog.value = false
         _extractionProgress.value = ExtractionProgress(
             archiveName = summary.fileName,
             isHatchMode = hatchMode,
@@ -796,7 +807,7 @@ class HatchViewModel(application: Application) : AndroidViewModel(application) {
             context = app,
             title = taskTitle,
             subtitle = summary.fileName
-        ) {
+        ) { pauseController ->
             StorageHelper.clearSafDirCache()
 
             val subfolderName = "${cleanBase}_extracted"
@@ -822,7 +833,8 @@ class HatchViewModel(application: Application) : AndroidViewModel(application) {
                     password = pass,
                     selectedEntryPaths = selectedEntriesOnly,
                     targetTreeUri = targetTreeUri,
-                    targetFolderDocUri = targetFolderDocUri
+                    targetFolderDocUri = targetFolderDocUri,
+                    pauseController = pauseController
                 )
             } else {
                 val file = _selectedArchiveFile.value ?: return@launchExtractionJob
@@ -834,7 +846,8 @@ class HatchViewModel(application: Application) : AndroidViewModel(application) {
                     selectedEntryPaths = selectedEntriesOnly,
                     context = app,
                     targetTreeUri = targetTreeUri,
-                    targetFolderDocUri = targetFolderDocUri
+                    targetFolderDocUri = targetFolderDocUri,
+                    pauseController = pauseController
                 )
             }
 
@@ -858,6 +871,8 @@ class HatchViewModel(application: Application) : AndroidViewModel(application) {
         val pass = _archivePassword.value.ifEmpty { resumeState.password }
 
         _lastCompletedTarget.value = null
+        _isFloatingControlsExpanded.value = false
+        _showStopConfirmDialog.value = false
         extractJob?.cancel()
         val remainingCount = resumeState.remainingEntries.size
         val resumeLabel = if (remainingCount == 1) "1 file" else "$remainingCount files"
@@ -865,7 +880,7 @@ class HatchViewModel(application: Application) : AndroidViewModel(application) {
             context = app,
             title = "Extracting $resumeLabel",
             subtitle = resumeState.archiveName
-        ) {
+        ) { pauseController ->
             val resumeTargetDir = File(resumeState.targetDirPath)
             val resumeTreeUri = _grantedFolder.value?.let { Uri.parse(it.uriString) }
             val resumeFolderDocUri = if (resumeTreeUri != null && resumeTargetDir.name.endsWith("_extracted")) {
@@ -874,7 +889,12 @@ class HatchViewModel(application: Application) : AndroidViewModel(application) {
                 }.getOrNull()
             } else null
 
-            KaiHatchEngine.resumeInterruptedExtraction(app, resumeState, pass).collect { progress ->
+            KaiHatchEngine.resumeInterruptedExtraction(
+                context = app,
+                resumeState = resumeState,
+                password = pass,
+                pauseController = pauseController
+            ).collect { progress ->
                 handleExtractionProgressUpdate(
                     progress = progress,
                     archiveName = resumeState.archiveName,
@@ -964,7 +984,43 @@ class HatchViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
 
+            ExtractionStatus.PAUSING -> {
+                val fileLine = progress.currentFileName.substringAfterLast('/').ifEmpty { archiveName }
+                val remainingBytes = (progress.totalUncompressedBytes - progress.bytesExtracted).coerceAtLeast(0L)
+                viewModelScope.launch(Dispatchers.IO) {
+                    HatchNotificationHelper.showLiveProgressNotification(
+                        context = app,
+                        title = "Pausing extraction...",
+                        subtitle = fileLine,
+                        detailBigText = "Finishing current atomic step • ${StorageHelper.formatBytes(remainingBytes)} remaining",
+                        progressFraction = progress.overallProgressFraction,
+                        speedText = "PAUSING",
+                        indeterminate = false,
+                        forceUpdate = true
+                    )
+                }
+            }
+
+            ExtractionStatus.PAUSED -> {
+                val fileLine = progress.currentFileName.substringAfterLast('/').ifEmpty { archiveName }
+                val remainingBytes = (progress.totalUncompressedBytes - progress.bytesExtracted).coerceAtLeast(0L)
+                viewModelScope.launch(Dispatchers.IO) {
+                    HatchNotificationHelper.showLiveProgressNotification(
+                        context = app,
+                        title = "Extraction paused",
+                        subtitle = fileLine,
+                        detailBigText = "Paused at ${(progress.overallProgressFraction * 100f).toInt()}% • ${StorageHelper.formatBytes(remainingBytes)} remaining",
+                        progressFraction = progress.overallProgressFraction,
+                        speedText = "PAUSED",
+                        indeterminate = false,
+                        forceUpdate = true
+                    )
+                }
+            }
+
             ExtractionStatus.COMPLETED -> {
+                _isFloatingControlsExpanded.value = false
+                _showStopConfirmDialog.value = false
                 if (progress.isHatchMode) {
                     _selectedArchiveFile.value = null
                     _selectedSafUri.value = null
@@ -1006,6 +1062,8 @@ class HatchViewModel(application: Application) : AndroidViewModel(application) {
             }
 
             ExtractionStatus.ERROR, ExtractionStatus.CANCELLED -> {
+                _isFloatingControlsExpanded.value = false
+                _showStopConfirmDialog.value = false
                 viewModelScope.launch(Dispatchers.IO) {
                     HatchNotificationHelper.cancelProgressNotification(app)
                 }
@@ -1016,11 +1074,87 @@ class HatchViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun setFloatingControlsExpanded(expanded: Boolean) {
+        if (!_extractionProgress.value.status.isActiveSession) {
+            _isFloatingControlsExpanded.value = false
+            return
+        }
+        _isFloatingControlsExpanded.value = expanded
+    }
+
+    fun toggleFloatingControlsExpanded() {
+        if (!_extractionProgress.value.status.isActiveSession) {
+            _isFloatingControlsExpanded.value = false
+            return
+        }
+        _isFloatingControlsExpanded.value = !_isFloatingControlsExpanded.value
+    }
+
+    fun pauseExtraction() {
+        val current = _extractionProgress.value
+        if (!current.status.isActiveSession || current.status == ExtractionStatus.PAUSING || current.status == ExtractionStatus.PAUSED) {
+            return
+        }
+        val controller = ArchiveJobRunner.activePauseController
+        if (controller != null) {
+            controller.requestPause()
+            // If controller already transitioned directly to PAUSED (e.g., before any worker entered), reflect it
+            val targetStatus = if (controller.isPaused) ExtractionStatus.PAUSED else ExtractionStatus.PAUSING
+            val updated = current.copy(
+                status = targetStatus,
+                bytesPerSecond = 0L
+            )
+            _extractionProgress.value = updated
+            ArchiveJobRunner.updateExtractionProgress(updated)
+        } else {
+            val updated = current.copy(
+                status = ExtractionStatus.PAUSED,
+                bytesPerSecond = 0L
+            )
+            _extractionProgress.value = updated
+            ArchiveJobRunner.updateExtractionProgress(updated)
+        }
+    }
+
+    fun resumeExtraction() {
+        val current = _extractionProgress.value
+        if (current.status != ExtractionStatus.PAUSED && current.status != ExtractionStatus.PAUSING) {
+            return
+        }
+        val controller = ArchiveJobRunner.activePauseController
+        if (controller != null) {
+            controller.resume()
+        }
+        val updated = current.copy(
+            status = ExtractionStatus.EXTRACTING
+        )
+        _extractionProgress.value = updated
+        ArchiveJobRunner.updateExtractionProgress(updated)
+    }
+
+    fun requestStopExtractionConfirmation() {
+        if (!_extractionProgress.value.status.isActiveSession) return
+        _showStopConfirmDialog.value = true
+    }
+
+    fun dismissStopExtractionConfirmation() {
+        _showStopConfirmDialog.value = false
+    }
+
+    fun confirmStopExtraction() {
+        _showStopConfirmDialog.value = false
+        _isFloatingControlsExpanded.value = false
+        cancelExtraction()
+    }
+
     fun cancelExtraction() {
-        extractJob?.cancel()
+        _showStopConfirmDialog.value = false
+        _isFloatingControlsExpanded.value = false
         ArchiveJobRunner.cancelExtraction(getApplication())
+        extractJob?.cancel()
         val cancelledState = _extractionProgress.value.copy(
-            status = ExtractionStatus.CANCELLED
+            status = ExtractionStatus.CANCELLED,
+            bytesPerSecond = 0L
         )
         _extractionProgress.value = cancelledState
         ArchiveJobRunner.updateExtractionProgress(cancelledState)
