@@ -57,7 +57,7 @@ Run the local JVM and Robolectric unit test suite:
 Run a specific test class:
 
 ```bash
-./gradlew :app:testDebugUnitTest --tests com.example.ExampleRobolectricTest
+./gradlew :app:testDebugUnitTest --tests com.biplov.kaihatch.ExampleRobolectricTest
 ```
 
 > **Note on `KaiHatchPhase1RegressionTest`:** The regression suite includes an intentional fault-injection test (`faultInjection_largeDeflateTailSwap_tornWriteAndCrash_mustRecoverValidSha256OnResume`) that documents the known mid-`slot 0` torn-write limitation in large-`DEFLATE` tail-swap extraction. Do not delete or mask this test unless your change specifically resolves that architectural limitation with full verification.
@@ -66,8 +66,8 @@ Run a specific test class:
 
 ## Project Structure & Conventions
 
-- **Language & UI:** 100% Kotlin and Jetpack Compose with Material 3 (`com.example.ui.*`).
-- **Package Structure (`app/src/main/java/com/example/`):**
+- **Language & UI:** 100% Kotlin and Jetpack Compose with Material 3 (`com.biplov.kaihatch.ui.*`).
+- **Package Structure (`app/src/main/java/com/biplov/kaihatch/`):**
   - `engine/` — Core archive parsing (`ZipParser`), extraction (`KaiHatchEngine`), compression (`HatchCompressEngine`), I/O buffering (`CommonsCompressBufferStrategy`), and storage simulation (`SpaceLabEngine`).
   - `data/` — Storage Access Framework (SAF) helpers, POSIX file descriptor integration (`StorageHelper`), crash recovery journals (`ResumeJournalManager`), history persistence (`HistoryRepository`), and foreground job execution (`ArchiveJobRunner`, `ArchiveForegroundService`).
   - `model/` — Immutable data models for archive metadata, extraction/compression progress, and theme preferences.

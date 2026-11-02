@@ -28,7 +28,7 @@
 -dontwarn org.tukaani.xz.**
 
 # Keep CoroutineWorker entry point for WorkManager instantiation
--keep class com.example.data.HatchArchiveWorker {
+-keep class com.biplov.kaihatch.data.HatchArchiveWorker {
     public <init>(android.content.Context, androidx.work.WorkerParameters);
 }
 -keep class * extends androidx.work.ListenableWorker {
