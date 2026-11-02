@@ -1713,7 +1713,7 @@ fun HatchExtractScreen(
                                     fontSize = 14.sp
                                 )
                                 Text(
-                                    text = if (notificationsEnabled) "Background Worker & Status Bar Active" else "Background Worker Active",
+                                    text = if (isHatchMode) "Making room as we go" else if (notificationsEnabled) "Background Worker & Status Bar Active" else "Background Worker Active",
                                     fontSize = 11.sp,
                                     color = primary
                                 )
