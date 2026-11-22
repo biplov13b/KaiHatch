@@ -40,18 +40,18 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
 /**
- * Part 3C UX & Diagnostics test suite:
+ * Recovery UX & Diagnostics Test Suite:
  * Verifies:
  * 1. Recovery card visibility and state classification across all verified eligibility combinations
  *    (BOTH_AVAILABLE, RESUME_ONLY, RESTORE_PENDING, UNAVAILABLE, SAF/direct-POSIX limitations).
  * 2. Meaningful archive-open failure diagnostics in the I/O Console (including Recovery Notice
  *    when opening a partially consumed archive that has an active recovery journal).
  * 3. Recovery failure diagnostics, non-empty I/O Console logs on ERROR/FINALIZING, and
- *    ViewModel FINALIZING -> CANCELLED transitions during Part 3B Restore.
+ *    ViewModel FINALIZING -> CANCELLED transitions during in-place ZIP Restore.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [33])
-class Part3CRecoveryUxAndDiagnosticsTest {
+class RecoveryUxAndDiagnosticsTest {
 
     @get:Rule
     val tempFolder = TemporaryFolder()

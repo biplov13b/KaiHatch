@@ -60,7 +60,7 @@ Run a specific test class:
 ./gradlew :app:testDebugUnitTest --tests com.biplov.kaihatch.ExampleRobolectricTest
 ```
 
-> **Note on `KaiHatchPhase1RegressionTest`:** The regression suite includes an intentional fault-injection test (`faultInjection_largeDeflateTailSwap_tornWriteAndCrash_mustRecoverValidSha256OnResume`) that documents the known mid-`slot 0` torn-write limitation in large-`DEFLATE` tail-swap extraction. Do not delete or mask this test unless your change specifically resolves that architectural limitation with full verification.
+> **Note on `ExtractionBaselineAndFaultInjectionTest`:** The regression suite includes an intentional fault-injection test (`faultInjection_largeDeflateTailSwap_tornWriteAndCrash_mustRecoverValidSha256OnResume`) that documents the known mid-`slot 0` torn-write limitation in large-`DEFLATE` tail-swap extraction. Do not delete or mask this test unless your change specifically resolves that architectural limitation with full verification.
 
 ---
 

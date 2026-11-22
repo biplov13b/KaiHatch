@@ -202,8 +202,8 @@ KaiHatch includes a JVM and Robolectric test suite covering fault injection, cra
 ./gradlew :app:testDebugUnitTest
 ```
 
-> **Note on Expected Test Failure in Phase 1 Suite:**
-> `KaiHatchPhase1RegressionTest.faultInjection_largeDeflateTailSwap_tornWriteAndCrash_mustRecoverValidSha256OnResume` is an intentionally retained fault-injection test documenting the unrecoverable mid-`slot 0` torn-write window described in [Known Limitations & Safety Disclosures](#known-limitations--safety-disclosures) below. It is kept active and unsuppressed so this recovery boundary remains visible; if CI is configured to run unit tests, this test may be explicitly classified as a known expected failure while remaining visible.
+> **Note on Expected Test Failure in Baseline Fault-Injection Suite:**
+> `ExtractionBaselineAndFaultInjectionTest.faultInjection_largeDeflateTailSwap_tornWriteAndCrash_mustRecoverValidSha256OnResume` is an intentionally retained fault-injection test documenting the unrecoverable mid-`slot 0` torn-write window described in [Known Limitations & Safety Disclosures](#known-limitations--safety-disclosures) below. It is kept active and unsuppressed so this recovery boundary remains visible; if CI is configured to run unit tests, this test may be explicitly classified as a known expected failure while remaining visible.
 
 ---
 

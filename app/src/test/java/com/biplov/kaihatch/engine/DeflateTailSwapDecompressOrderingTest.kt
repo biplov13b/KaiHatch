@@ -29,7 +29,7 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
 /**
- * Phase 3 Regression Suite: Decompress-First Ordering for Large DEFLATE Tail-Swap Using Java Inflater.
+ * Regression Suite: Decompress-First Ordering for Large DEFLATE Tail-Swap Using Java Inflater.
  *
  * Verifies:
  * 1. Compressed data is never overwritten (`pwrite`) or truncated (`ftruncate`) until the
@@ -46,7 +46,7 @@ import java.util.zip.ZipOutputStream
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
-class KaiHatchPhase3DeflateOrderingTest {
+class DeflateTailSwapDecompressOrderingTest {
 
     @get:Rule
     val tempFolder = TemporaryFolder()

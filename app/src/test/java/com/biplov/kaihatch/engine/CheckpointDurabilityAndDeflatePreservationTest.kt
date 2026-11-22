@@ -42,7 +42,7 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
 /**
- * Part 2A Fault-Injection Suite: Recovery Checkpoint Durability & Partial DEFLATE Preservation.
+ * Fault-Injection Suite: Recovery Checkpoint Durability & Partial DEFLATE Preservation.
  *
  * Verifies:
  * 1. Interrupted checkpoint saves across every persistence stage never destroy the prior valid
@@ -56,7 +56,7 @@ import java.util.zip.ZipOutputStream
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
-class Part2ACheckpointDurabilityTest {
+class CheckpointDurabilityAndDeflatePreservationTest {
 
     @get:Rule
     val tempFolder = TemporaryFolder()

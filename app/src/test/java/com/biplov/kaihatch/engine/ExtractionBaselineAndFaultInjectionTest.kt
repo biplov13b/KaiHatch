@@ -39,7 +39,7 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
 /**
- * Phase 1: Test-First Baseline & Fault-Injection Harness for KaiHatch.
+ * Extraction Baseline & Fault-Injection Regression Suite for KaiHatch.
  *
  * Covers:
  * 1. Format regressions (ZIP, ZIP64, TAR, TAR.GZ, 7z, large STORED >= 4 MB, large DEFLATE >= 4 MB)
@@ -54,7 +54,7 @@ import java.util.zip.ZipOutputStream
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
-class KaiHatchPhase1RegressionTest {
+class ExtractionBaselineAndFaultInjectionTest {
 
     @get:Rule
     val tempFolder = TemporaryFolder()

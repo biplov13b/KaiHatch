@@ -45,25 +45,25 @@ import java.util.Random
 import java.util.zip.ZipFile
 
 /**
- * Phase 3 Regression & Storage Lifecycle Verification Suite:
+ * Storage Lifecycle & Cleanup Regression Suite:
  * Validates temporary storage lifecycle (`cacheDir/compress_staging` and `cacheDir/compress_temp`),
  * ownership-based cleanup, active-file protection, SAF output failure handling, and strict
  * preservation of extraction recovery journals and legacy `files/extracted` data.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
-class Phase3TemporaryStorageCleanupTest {
+class TemporaryStorageCleanupTest {
 
     private lateinit var context: Application
     private lateinit var testRootDir: File
     private lateinit var safBackingRoot: File
 
     companion object {
-        const val AUTHORITY = "com.biplov.kaihatch.phase3.saf.documents"
-        const val TREE_DOC_ID = "phase3_tree_root"
+        const val AUTHORITY = "com.biplov.kaihatch.cleanup.saf.documents"
+        const val TREE_DOC_ID = "cleanup_tree_root"
     }
 
-    class Phase3SafDocumentsProvider : ContentProvider() {
+    class CleanupTestSafDocumentsProvider : ContentProvider() {
         companion object {
             var rootDir: File? = null
             var failCreateDocument: Boolean = false
@@ -218,14 +218,14 @@ class Phase3TemporaryStorageCleanupTest {
         context = ApplicationProvider.getApplicationContext()
         testRootDir = File(context.cacheDir, "phase3_test_${System.nanoTime()}").apply { mkdirs() }
         safBackingRoot = File(testRootDir, "saf_provider_root").apply { mkdirs() }
-        Phase3SafDocumentsProvider.reset(safBackingRoot)
+        CleanupTestSafDocumentsProvider.reset(safBackingRoot)
 
         val info = ProviderInfo().apply {
             authority = AUTHORITY
             exported = true
             grantUriPermissions = true
         }
-        Robolectric.buildContentProvider(Phase3SafDocumentsProvider::class.java).create(info)
+        Robolectric.buildContentProvider(CleanupTestSafDocumentsProvider::class.java).create(info)
 
         // Ensure clean compression temp & staging directories before each test
         StorageHelper.getTempDir(context).listFiles()?.forEach { it.deleteRecursively() }
@@ -427,7 +427,7 @@ class Phase3TemporaryStorageCleanupTest {
         val tempDir = StorageHelper.getTempDir(context)
 
         // Case A: createDocument fails
-        Phase3SafDocumentsProvider.failCreateDocument = true
+        CleanupTestSafDocumentsProvider.failCreateDocument = true
         var createFailed = false
         try {
             StorageHelper.prepareArchiveTargetInGrantedFolder(
@@ -442,7 +442,7 @@ class Phase3TemporaryStorageCleanupTest {
         assertEquals("compress_temp must remain empty when SAF createDocument fails", 0, tempDir.listFiles()?.size ?: 0)
 
         // Case B: createDocument succeeds, compression writes temp file, then SAF stream export fails
-        Phase3SafDocumentsProvider.failCreateDocument = false
+        CleanupTestSafDocumentsProvider.failCreateDocument = false
         val target = StorageHelper.prepareArchiveTargetInGrantedFolder(
             context = context,
             treeUri = treeUri,
@@ -451,7 +451,7 @@ class Phase3TemporaryStorageCleanupTest {
         target.workingFile.writeBytes("Simulated compressed archive payload".repeat(256).toByteArray())
         assertTrue(target.workingFile.exists())
 
-        Phase3SafDocumentsProvider.failWriteStream = true
+        CleanupTestSafDocumentsProvider.failWriteStream = true
         var finalizeFailed = false
         try {
             StorageHelper.finalizeArchiveTargetInGrantedFolder(context, target)

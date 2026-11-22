@@ -36,7 +36,7 @@ import java.util.zip.ZipOutputStream
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
-class Phase2VerifyBeforeHatchTest {
+class VerifyBeforeHatchTest {
 
     @get:Rule
     val tempFolder = TemporaryFolder()

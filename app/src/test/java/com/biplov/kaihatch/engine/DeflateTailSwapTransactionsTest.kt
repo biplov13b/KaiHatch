@@ -31,7 +31,7 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
 /**
- * Part 2C Validation Suite: Crash-Safe DEFLATE Tail-Swap Transactions.
+ * Validation Suite: Crash-Safe DEFLATE Tail-Swap Transactions.
  *
  * Deterministically injects crashes before/after `pwrite`, torn `pwrite`, `fsync`,
  * `PREPARED` / `RELOCATED_TRUNCATE_PENDING` / `COMMITTED` checkpoint saves, and `ftruncate`
@@ -40,7 +40,7 @@ import java.util.zip.ZipOutputStream
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
-class Part2CTailSwapTransactionsTest {
+class DeflateTailSwapTransactionsTest {
 
     @get:Rule
     val tempFolder = TemporaryFolder()

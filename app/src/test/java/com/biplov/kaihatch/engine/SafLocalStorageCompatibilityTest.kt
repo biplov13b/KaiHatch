@@ -37,14 +37,14 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
 /**
- * Phase 6 Regression Suite: Local SAF Storage Compatibility & Three Targeted Fixes:
+ * Regression Suite: Local SAF Storage Compatibility & Safeguards:
  * 1. Persistable URI permission handling (`StorageHelper.takePersistablePermission`).
  * 2. Prevent Hatch Mode from silently switching to Standard Mode when writable access or truncation is unavailable.
  * 3. SAF resume eligibility checks validate actual source descriptor size and journal `slot0Crc` before permitting recovery.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
-class KaiHatchPhase6SafLocalCompatibilityTest {
+class SafLocalStorageCompatibilityTest {
 
     enum class ProviderMode {
         READ_WRITE_FILE,

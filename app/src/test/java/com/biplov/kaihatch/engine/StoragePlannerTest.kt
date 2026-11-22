@@ -17,7 +17,7 @@ import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
-class Phase1StoragePlannerTest {
+class StoragePlannerTest {
 
     private val gb = 1024L * 1024L * 1024L
     private val mb = 1024L * 1024L

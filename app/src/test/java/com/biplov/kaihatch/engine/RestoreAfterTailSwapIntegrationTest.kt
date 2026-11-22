@@ -42,7 +42,7 @@ import java.util.zip.ZipFile
 import java.util.zip.ZipOutputStream
 
 /**
- * Part 3B integration test suite:
+ * Restore-After-Tail-Swap Integration Test Suite:
  * Verifies Restore Remaining ZIP after recoverable v2 DEFLATE tail-swap interruptions:
  * - Every transactional crash phase (PREPARED torn pwrite, RELOCATED_TRUNCATE_PENDING across
  *   first-half / odd middle-chunk / second-half, COMMITTED with uncommitted trailing output)
@@ -56,7 +56,7 @@ import java.util.zip.ZipOutputStream
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [33])
-class Part3BRestoreAfterTailSwapTest {
+class RestoreAfterTailSwapIntegrationTest {
 
     @get:Rule
     val tempFolder = TemporaryFolder()

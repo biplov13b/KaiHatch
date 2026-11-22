@@ -25,7 +25,7 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
 /**
- * Standalone Proof-of-Concept Verification & Benchmark Suite for [CheckpointableInflateEngine].
+ * Verification & Benchmark Suite for [CheckpointableInflateEngine].
  *
  * Verifies:
  * 1. Bit-for-bit equivalence against `java.util.zip.Inflater` across independently generated
@@ -44,7 +44,7 @@ import java.util.zip.ZipOutputStream
  * 7. Actual decoding throughput (MB/s), checkpoint latency, and memory footprint vs. Java's `Inflater`
  *    across multiple archive sizes and compression ratios.
  */
-class CheckpointableInflateProofOfConceptTest {
+class CheckpointableInflateEngineTest {
 
     @get:Rule
     val tempFolder = TemporaryFolder()

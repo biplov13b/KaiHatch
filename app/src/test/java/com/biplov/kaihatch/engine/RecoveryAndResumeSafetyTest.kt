@@ -42,7 +42,7 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
 /**
- * Phase 2 Regression Tests for Extraction Recovery & Resume Safety Hardening:
+ * Regression Tests for Extraction Recovery & Resume Safety Hardening:
  * 1. Standard Mode interruption (cancel mid-extraction -> source intact, no journal, clean restart succeeds)
  * 2. Hatch Mode interruption immediately BEFORE and AFTER source truncation (CD and window boundaries)
  * 3. SAF destination persistence across interruption and resume (including re-queuing missing SAF entries whose source bytes remain)
@@ -56,13 +56,13 @@ import java.util.zip.ZipOutputStream
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
-class Phase2RecoveryAndResumeSafetyTest {
+class RecoveryAndResumeSafetyTest {
 
     companion object {
-        const val TEST_AUTHORITY = "com.biplov.kaihatch.test.saf.phase2"
+        const val TEST_AUTHORITY = "com.biplov.kaihatch.test.saf.recovery"
     }
 
-    class Phase2SafDocumentsProvider : android.content.ContentProvider() {
+    class RecoveryTestSafDocumentsProvider : android.content.ContentProvider() {
         companion object {
             lateinit var backingRootDir: File
             val docIdToFile = ConcurrentHashMap<String, File>()
@@ -266,8 +266,8 @@ class Phase2RecoveryAndResumeSafetyTest {
         safBackingRoot = File(testRootDir, "saf_provider_storage").apply { mkdirs() }
         directPosixRoot = File(testRootDir, "direct_posix_storage").apply { mkdirs() }
 
-        Phase2SafDocumentsProvider.reset(safBackingRoot)
-        Robolectric.setupContentProvider(Phase2SafDocumentsProvider::class.java, TEST_AUTHORITY)
+        RecoveryTestSafDocumentsProvider.reset(safBackingRoot)
+        Robolectric.setupContentProvider(RecoveryTestSafDocumentsProvider::class.java, TEST_AUTHORITY)
 
         safTreeUri = DocumentsContract.buildTreeDocumentUri(TEST_AUTHORITY, "opaque_tree_root")
     }
@@ -275,8 +275,8 @@ class Phase2RecoveryAndResumeSafetyTest {
     @After
     fun tearDown() {
         KaiHatchEngine.faultInjector = TruncationFaultInjector.NoOp
-        Phase2SafDocumentsProvider.permissionRevoked.set(false)
-        Phase2SafDocumentsProvider.failWriteForFileName.set(null)
+        RecoveryTestSafDocumentsProvider.permissionRevoked.set(false)
+        RecoveryTestSafDocumentsProvider.failWriteForFileName.set(null)
         StorageHelper.clearSafDirCache()
         File(context.filesDir, "journals").deleteRecursively()
         testRootDir.deleteRecursively()
@@ -622,7 +622,7 @@ class Phase2RecoveryAndResumeSafetyTest {
         val journal = ResumeJournalManager.loadPendingStates(context).single()
 
         // Revoke SAF permission
-        Phase2SafDocumentsProvider.permissionRevoked.set(true)
+        RecoveryTestSafDocumentsProvider.permissionRevoked.set(true)
 
         val failedResumeEmissions = KaiHatchEngine.resumeInterruptedExtraction(
             context = context,
@@ -643,7 +643,7 @@ class Phase2RecoveryAndResumeSafetyTest {
         assertTrue(fallbackDir.walkTopDown().filter { it.isFile }.toList().isEmpty())
 
         // Restore SAF permission and resume again -> must complete 100%
-        Phase2SafDocumentsProvider.permissionRevoked.set(false)
+        RecoveryTestSafDocumentsProvider.permissionRevoked.set(false)
         val succeededEmissions = KaiHatchEngine.resumeInterruptedExtraction(
             context = context,
             resumeState = preservedJournals.single()
@@ -952,7 +952,7 @@ class Phase2RecoveryAndResumeSafetyTest {
         val safSubfolderUri = StorageHelper.getOrCreateDocumentSubfolder(context, safTreeUri, "write_fail_mid")
 
         // Fail creating/opening head_fail_once.bin after tail_ok.bin succeeds
-        Phase2SafDocumentsProvider.failWriteForFileName.set("head_fail_once.bin")
+        RecoveryTestSafDocumentsProvider.failWriteForFileName.set("head_fail_once.bin")
 
         val emissions = KaiHatchEngine.extractArchive(
             context = context,
@@ -971,7 +971,7 @@ class Phase2RecoveryAndResumeSafetyTest {
         assertArrayEquals(entry2.sha256, sha256(File(safDir, "tail_ok.bin")))
 
         // Clear the write failure and resume from journal -> must complete 100%
-        Phase2SafDocumentsProvider.failWriteForFileName.set(null)
+        RecoveryTestSafDocumentsProvider.failWriteForFileName.set(null)
         val journal = ResumeJournalManager.loadPendingStates(context).single()
         val resumeEmissions = KaiHatchEngine.resumeInterruptedExtraction(context, journal).toList()
         assertEquals(ExtractionStatus.COMPLETED, resumeEmissions.last().status)

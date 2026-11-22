@@ -36,7 +36,7 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
 /**
- * Part 3A integration test suite:
+ * Crash-Safe Resume Integration Test Suite:
  * Verifies end-to-end crash-safe Resume through the public APIs
  * (`ResumeJournalManager.assessResumeEligibility`, `isStateSafelyResumable`,
  * and `KaiHatchEngine.resumeInterruptedExtraction`) across every transactional DEFLATE
@@ -46,7 +46,7 @@ import java.util.zip.ZipOutputStream
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [33])
-class Part3ACrashSafeResumeIntegrationTest {
+class CrashSafeResumeIntegrationTest {
 
     @get:Rule
     val tempFolder = TemporaryFolder()

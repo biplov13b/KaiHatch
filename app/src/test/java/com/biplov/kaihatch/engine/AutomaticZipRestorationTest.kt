@@ -54,13 +54,13 @@ import java.util.zip.ZipOutputStream
 
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
-class Phase3AutomaticZipRestorationTest {
+class AutomaticZipRestorationTest {
 
     companion object {
-        const val PHASE3_SAF_AUTHORITY = "com.biplov.kaihatch.test.saf.phase3"
+        const val RESTORATION_SAF_AUTHORITY = "com.biplov.kaihatch.test.saf.restoration"
     }
 
-    class Phase3SafDocumentsProvider : android.content.ContentProvider() {
+    class RestorationTestSafDocumentsProvider : android.content.ContentProvider() {
         companion object {
             lateinit var backingRootDir: File
             val docIdToFile = ConcurrentHashMap<String, File>()
@@ -183,7 +183,7 @@ class Phase3AutomaticZipRestorationTest {
                     val docUri = if (DocumentsContract.isTreeUri(targetUri)) {
                         DocumentsContract.buildDocumentUriUsingTree(targetUri, newDocId)
                     } else {
-                        DocumentsContract.buildDocumentUri(PHASE3_SAF_AUTHORITY, newDocId)
+                        DocumentsContract.buildDocumentUri(RESTORATION_SAF_AUTHORITY, newDocId)
                     }
                     Bundle().apply { putParcelable("uri", docUri) }
                 }
@@ -902,12 +902,12 @@ class Phase3AutomaticZipRestorationTest {
         val app = ApplicationProvider.getApplicationContext<Application>()
         val testDir = File(app.cacheDir, "p3_saf_e2e_${System.nanoTime()}").apply { mkdirs() }
         val safRoot = File(testDir, "saf_root").apply { mkdirs() }
-        Phase3SafDocumentsProvider.reset(safRoot)
-        Robolectric.setupContentProvider(Phase3SafDocumentsProvider::class.java, PHASE3_SAF_AUTHORITY)
+        RestorationTestSafDocumentsProvider.reset(safRoot)
+        Robolectric.setupContentProvider(RestorationTestSafDocumentsProvider::class.java, RESTORATION_SAF_AUTHORITY)
         StorageHelper.clearSafDirCache()
 
         try {
-            val treeUri = DocumentsContract.buildTreeDocumentUri(PHASE3_SAF_AUTHORITY, "p3_tree_root")
+            val treeUri = DocumentsContract.buildTreeDocumentUri(RESTORATION_SAF_AUTHORITY, "p3_tree_root")
             val entries = listOf(
                 Triple("01_first.bin", deterministicBytes(801L, 96 * 1024), ZipEntry.STORED),
                 Triple("02_second.bin", compressibleBytes(802L, 128 * 1024), ZipEntry.DEFLATED),
@@ -918,8 +918,8 @@ class Phase3AutomaticZipRestorationTest {
             // 1. SAF zero-copy Stop -> In-place Restore to SAF destination
             val safZipStop = File(safRoot, "saf_stop.zip")
             buildZipArchive(safZipStop, entries)
-            val safZipDocId = Phase3SafDocumentsProvider.registerFile(safZipStop)
-            val safZipUri = DocumentsContract.buildDocumentUri(PHASE3_SAF_AUTHORITY, safZipDocId)
+            val safZipDocId = RestorationTestSafDocumentsProvider.registerFile(safZipStop)
+            val safZipUri = DocumentsContract.buildDocumentUri(RESTORATION_SAF_AUTHORITY, safZipDocId)
             val safOutSubfolder = StorageHelper.getOrCreateDocumentSubfolder(app, treeUri, "saf_stop_out")!!
             val fallbackDir = File(testDir, "fallback_stop").apply { mkdirs() }
             val originalSafSize = safZipStop.length()
@@ -974,8 +974,8 @@ class Phase3AutomaticZipRestorationTest {
             // 2. Crash recovery with SAF source + SAF destination + corrupt partial SAF output cleanup
             val safZipCrash = File(safRoot, "saf_crash.zip")
             buildZipArchive(safZipCrash, entries)
-            val crashDocId = Phase3SafDocumentsProvider.registerFile(safZipCrash)
-            val crashUri = DocumentsContract.buildDocumentUri(PHASE3_SAF_AUTHORITY, crashDocId)
+            val crashDocId = RestorationTestSafDocumentsProvider.registerFile(safZipCrash)
+            val crashUri = DocumentsContract.buildDocumentUri(RESTORATION_SAF_AUTHORITY, crashDocId)
             val safCrashOutSubfolder = StorageHelper.getOrCreateDocumentSubfolder(app, treeUri, "saf_crash_out")!!
             val crashFallbackDir = File(testDir, "fallback_crash").apply { mkdirs() }
 
@@ -1004,7 +1004,7 @@ class Phase3AutomaticZipRestorationTest {
             // Plant a corrupt partial SAF output for unextracted 01_first.bin to verify SAF cleanup
             val partialSafFile = File(File(safRoot, "saf_crash_out"), "01_first.bin")
             partialSafFile.writeBytes(byteArrayOf(1, 2, 3, 4))
-            Phase3SafDocumentsProvider.registerFile(partialSafFile)
+            RestorationTestSafDocumentsProvider.registerFile(partialSafFile)
 
             val pendingState = ResumeJournalManager.loadPendingStates(app)
                 .firstOrNull { it.archiveName == safZipCrash.name }

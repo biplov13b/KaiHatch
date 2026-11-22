@@ -31,7 +31,7 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
 /**
- * Phase 2 Regression Suite: Crash-Consistent Resume Journaling & Output Integrity Verification.
+ * Regression Suite: Crash-Consistent Resume Journaling & Output Integrity Verification.
  *
  * Covers:
  * 1. Crashes before and after Central Directory truncation (`BEFORE_CD_TRUNCATE`, `AFTER_CD_TRUNCATE`).
@@ -48,7 +48,7 @@ import java.util.zip.ZipOutputStream
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
-class KaiHatchPhase2JournalRegressionTest {
+class ResumeJournalAndOutputIntegrityTest {
 
     @get:Rule
     val tempFolder = TemporaryFolder()

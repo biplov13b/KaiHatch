@@ -37,7 +37,7 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
 /**
- * Phase 4 Regression Suite: Comprehensive CRC & Extraction-Integrity Protection.
+ * Regression Suite: Comprehensive CRC & Extraction-Integrity Protection.
  *
  * Verifies:
  * 1. Reverse-slice CRC32 combination (GF(2) polynomial matrix squaring) for large STORED entries (>= 4 MB).
@@ -52,11 +52,11 @@ import java.util.zip.ZipOutputStream
  *    - Retains the partially consumed archive without zero-truncating or deleting it.
  *    - Clearly reports SOURCE ARCHIVE STATE: PARTIALLY CONSUMED IN-PLACE.
  * 4. Large DEFLATE tail-swap corruption after partial source consumption.
- * 5. Phase 3 crash-recovery eligibility hardening (never marks an incomplete or overwritten archive as safely resumable).
+ * 5. Crash-recovery eligibility hardening (never marks an incomplete or overwritten archive as safely resumable).
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
-class KaiHatchPhase4IntegrityRegressionTest {
+class CrcAndExtractionIntegrityRegressionTest {
 
     private lateinit var context: Context
     private lateinit var workDir: File

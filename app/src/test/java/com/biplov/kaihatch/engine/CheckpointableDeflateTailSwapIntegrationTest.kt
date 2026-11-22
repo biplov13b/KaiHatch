@@ -32,7 +32,7 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
 /**
- * Part 2B Validation Suite: Checkpointable DEFLATE Integration in Large DEFLATE Tail-Swap Path.
+ * Validation Suite: Checkpointable DEFLATE Integration in Large DEFLATE Tail-Swap Path.
  *
  * Verifies:
  * 1. Multi-chunk DEFLATE decoding via `CheckpointableInflateEngine` across mixed Huffman/incompressible
@@ -44,11 +44,11 @@ import java.util.zip.ZipOutputStream
  *    `outputBytesWritten`, `runningCrc32`, 32 KB window, Huffman tables, pending tail bytes) AND
  *    relocation metadata (`relocatedSlot`, `relocatedLen`, `lastCompletedChunkIndex`, `chunkStep`),
  *    sufficient to reconstruct bit-exact output from the mutated/truncated archive, while strictly
- *    maintaining fail-closed Resume/Restore safeguards until Part 2C.
+ *    maintaining fail-closed Resume/Restore safeguards.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
-class Part2BCheckpointableDeflateIntegrationTest {
+class CheckpointableDeflateTailSwapIntegrationTest {
 
     @get:Rule
     val tempFolder = TemporaryFolder()

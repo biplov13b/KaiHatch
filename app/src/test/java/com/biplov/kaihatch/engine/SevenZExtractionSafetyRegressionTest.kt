@@ -29,7 +29,7 @@ import java.util.Random
 import java.util.zip.CRC32
 
 /**
- * Phase 5 Regression Suite:
+ * 7z Extraction Safety Regression Suite:
  * Verifies removal of the unsafe 7z `.bin`/`.iso` fallback extractor and hardcoded
  * filename heuristics (`Burnout`, `(Europe)`, `(USA)`, `iso`), accurate source-archive
  * consumption reporting when progressive 7z extraction modifies the archive before failing,
@@ -37,7 +37,7 @@ import java.util.zip.CRC32
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35])
-class KaiHatchPhase5SevenZRegressionTest {
+class SevenZExtractionSafetyRegressionTest {
 
     private lateinit var context: Context
     private lateinit var sandboxRoot: File

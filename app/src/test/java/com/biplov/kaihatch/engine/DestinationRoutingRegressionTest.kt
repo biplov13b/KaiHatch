@@ -43,7 +43,7 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
 /**
- * Phase 1 Regression Tests for Extraction Destination Routing:
+ * Regression Tests for Extraction Destination Routing:
  * - Direct filesystem destinations
  * - SAF document-tree destinations (when direct POSIX path resolution falls back to files/extracted)
  * - Large STORED ZIP entries (>= 4 MB) in Hatch Mode & Standard Mode
@@ -55,7 +55,7 @@ import java.util.zip.ZipOutputStream
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
-class Phase1DestinationRoutingRegressionTest {
+class DestinationRoutingRegressionTest {
 
     companion object {
         const val TEST_AUTHORITY = "com.biplov.kaihatch.test.saf.dest"
