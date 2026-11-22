@@ -1,4 +1,4 @@
-# KaiHatch — Next Release
+# KaiHatch v1.1.0
 
 A major update to KaiHatch: safer in-place extraction, better crash recovery, more control over storage, 32 language options, and a smoother Android experience.
 
