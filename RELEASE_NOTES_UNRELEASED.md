@@ -1,19 +1,23 @@
-# KaiHatch v1.1.0
+# KaiHatch v1.1.0 — A Major Update
 
-A major update to KaiHatch: safer in-place extraction, better crash recovery, more control over storage, 32 language options, and a smoother Android experience.
+**Safer extraction. Better recovery. More control.**
 
-## ✨ What's new
+KaiHatch is an Android port of [HatchZip](https://github.com/xevrion/hatchzip) by [xevrion](https://github.com/xevrion), with additional features built for Android using Kotlin and Jetpack Compose.
 
-- **32 language options** — Multilingual UI with a searchable picker and system-language support.
-- **Crash-safe Resume** — Durable recovery checkpoints help resume eligible interrupted Hatch Mode operations, including supported large DEFLATE extractions.
-- **Restore Remaining ZIP** — After stopping or interrupting extraction, rebuild the remaining contents as a usable ZIP/ZIP64 **in place**, when recovery checks permit it.
-- **Verify Before Hatch** — Structural Quick Check and streaming/CRC32 Full Verify, without modifying the archive.
-- **Storage Planner** — See estimated Standard vs Hatch peak storage requirements before unpacking.
-- **GitHub Updater** — Check for stable releases, download verified APKs, receive notifications, and reuse cached downloads after cancelled installation.
-- **Optional All Files Access** — Improved direct local-storage and recovery compatibility, with SAF access still available.
+This update brings stronger in-place extraction recovery, archive verification, more storage controls, **32 language options**, and a refined Material 3 Expressive experience.
+
+## ✨ What's New
+
+- **Crash-safe Resume** — Durable recovery checkpoints help resume eligible interrupted Hatch Mode extractions, including supported large DEFLATE operations.
+- **Restore Remaining ZIP** — Rebuild a usable ZIP/ZIP64 archive containing the *remaining* entries in place after eligible interruptions or stops, subject to recovery checks.
+- **Verify Before Hatch** — Run a read-only Quick Check for archive structure and headers, or a Full Verify with streaming and CRC32 integrity checks where supported.
+- **Storage Planner** — Compare estimated peak storage needs for Standard and Hatch modes before starting extraction.
+- **32 language options** — Searchable in-app language selection, regional variants, and system-language support.
+- **Built-in GitHub updater** — Check for new stable releases, download verified APKs, receive update notifications, and reuse verified cached downloads if installation is cancelled.
+- **Optional All Files Access** — Improved direct local-file access and recovery compatibility, while Android's Storage Access Framework remains available.
 
 <details>
-<summary><strong>See all 32 supported language options</strong></summary>
+<summary><strong>See all 32 language options</strong></summary>
 
 English · Spanish · French · German · Italian · Portuguese (Brazil) · Portuguese (Portugal) · Dutch  
 Russian · Ukrainian · Polish · Czech · Romanian · Hungarian · Greek · Turkish  
@@ -22,28 +26,43 @@ Japanese · Korean · Chinese (Simplified) · Chinese (Traditional) · Indonesia
 
 </details>
 
-## 🎨 Improvements
+## 🎨 Changes & Improvements
 
-- Redesigned, animated Material 3 Expressive Settings and refined onboarding.
-- Clearer recovery choices, progress indicators, and extraction notifications.
-- Persistent I/O Console logs across sessions.
-- Improved archive browsing, haptic feedback, large-file handling, and memory/storage efficiency.
+- Redesigned animated Material 3 Expressive Settings with expandable sections, plus refined onboarding, themes, and haptics.
+- Clearer recovery controls, progress states, extraction actions, and notifications.
+- Persistent I/O Console logs across app sessions, with explicit clearing.
+- Improved archive browsing, large-file feedback, storage-provider compatibility, and memory/I/O efficiency.
 
-## 🐛 Fixes
+## 🛠️ Fixes
 
-- Fixed SAF destination routing and local-storage compatibility issues.
-- Hardened interrupted DEFLATE extraction, journal checkpoints, and ZIP restoration.
-- Fixed source close/`EIO` completion issues, ZIP64 handling, temporary-file cleanup, and large 7z/LZMA2 memory failures.
-- Fixed installer routing, update caching races, notification cold-start events, and translation parity.
+- Corrected SAF destination routing and unsafe fallback behaviors.
+- Hardened DEFLATE tail-swap recovery, checkpoint durability, and ZIP restoration after interruption.
+- Fixed ZIP64 metadata/offset edge cases, source-close/`EIO` completion errors, and temporary-file cleanup.
+- Addressed large 7z/LZMA2 memory-budget failures and extraction state inconsistencies.
+- Fixed updater installer routing, cache/download races, cold-start notifications, and translation parity.
 
-## ⚠️ Before you use Hatch Mode
+## ⚠️ Important Notes
 
-**Hatch Mode progressively consumes the original archive.** Recovery and ZIP restoration are available only when the archive, checkpoint, and storage provider pass eligibility checks; restoration preserves **remaining** entries, not the original complete archive. **Standard Extraction** remains the safest choice when you must retain your source archive.
+**Hatch Mode progressively modifies and consumes the original archive.** Recovery and in-place ZIP restoration are conditional on an eligible archive, valid checkpoints, and compatible storage. **Restore Remaining ZIP restores only unextracted entries**; it does not recreate the original complete archive.
 
-Core archive operations run offline. The network is used for optional GitHub update functionality. Read the [README](https://github.com/biplov13b/KaiHatch#safety--limitations) for formats and safety details.
+Use **Standard Extraction** when preserving your original archive is essential. Not every format, encryption method, or storage provider supports in-place extraction or recovery.
 
-## 📦 Install or update
+Archive extraction and verification work offline. Internet access is used only for optional GitHub update checks and downloads. See the [README safety notes](https://github.com/biplov13b/KaiHatch#safety--limitations) and [full changelog](https://github.com/biplov13b/KaiHatch/blob/main/CHANGELOG.md).
 
-Download the release APK from **Assets** below. Android 7.0+ is required. If updating an existing KaiHatch installation, the APK must use a newer `versionCode` and the same signing certificate. Verify the attached `.sha256` checksum if supplied.
+## 📦 Installation & Update
 
-Thanks for trying KaiHatch and reporting bugs! ❤️
+- **Version:** `1.1.0` (`versionCode 3`)
+- **Application ID:** `com.biplov.kaihatch`
+- **Android requirement:** Android 7.0 (API 24) or newer
+- **APK asset:** `KaiHatch-v1.1.0.apk`
+- **Checksum asset:** `KaiHatch-v1.1.0.apk.sha256`
+
+Download the APK from **Assets** below and follow Android's installation prompt. Updating over an existing installation requires a higher `versionCode` and the same signing certificate.
+
+To verify the downloaded APK, compare its SHA-256 to:
+
+```text
+361efea6dfca16112a979157ef816057987120c130eee0524cdc77d4adfa1714  KaiHatch-v1.1.0.apk
+```
+
+Thanks for supporting KaiHatch and reporting issues! ❤️
