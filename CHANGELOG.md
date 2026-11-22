@@ -2,7 +2,7 @@
 
 Notable user-facing changes are recorded here. For technical history, see [Git commits](https://github.com/biplov13b/KaiHatch/compare/v1.0.1...main).
 
-## [Unreleased] — since v1.0.1
+## [v1.1.0] — 2026-11-23
 
 ### Added
 - **32 language options**, including regional Portuguese and Chinese variants, searchable selection, and system-language matching.
