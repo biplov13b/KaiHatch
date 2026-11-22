@@ -3,240 +3,193 @@
 </p>
 
 <p align="center">
-  <img src="docs/assets/kaihatch-app-icon.png" alt="KaiHatch app icon" width="104" />
+  <img src="docs/assets/kaihatch-app-icon.png" alt="KaiHatch app icon" width="96" />
 </p>
 
-# KaiHatch
-
-**Extract archives on Android without needing twice the free storage.**
+<h1 align="center">KaiHatch</h1>
 
 <p align="center">
-  <strong><a href="https://github.com/biplov13b/KaiHatch/releases">Download APK on GitHub Releases</a></strong>
+  <strong>An Android port of <a href="https://github.com/xevrion/hatchzip">HatchZip</a> by <a href="https://github.com/xevrion">xevrion</a>, with additional features.</strong><br />
+  Extract smarter. Use less space.
 </p>
-
----
-
-## What KaiHatch Does
-
-Normally, unpacking a large archive on your phone requires enough free storage to hold **both** the original compressed file and all of the unpacked files at the same time. If you have a 10 GB `.zip` file and only 4 GB of free space left, standard archive apps simply fail with an "Out of space" error.
-
-**KaiHatch** solves this for local archives on Android by offering two extraction modes:
-
-- **Standard Mode (Safe Default):** Extracts your files normally and keeps the original archive untouched.
-- **Hatch Mode (Low-Storage Mode):** Unpacks files starting from the **end** of the archive, verifies each extracted file, and **progressively shrinks the original archive in place** (`ftruncate`) to free up storage as it goes.
-
----
-
-## Standard Mode vs. Hatch Mode Overview
 
 <p align="center">
-  <img src="docs/assets/kaihatch-overview.webp" alt="Two ways to extract: Standard Mode vs Hatch Mode" width="760" />
+  <a href="https://github.com/biplov13b/KaiHatch/releases"><strong>Download APK</strong></a>
+  &nbsp;·&nbsp;
+  <a href="https://github.com/biplov13b/KaiHatch/issues">Report an issue</a>
+</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/Android-7.0%2B-3DDC84?logo=android&logoColor=white" alt="Android 7.0 or later" />
+  <img src="https://img.shields.io/badge/Kotlin-Jetpack%20Compose-7F52FF?logo=kotlin&logoColor=white" alt="Kotlin and Jetpack Compose" />
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="Apache License 2.0" /></a>
+</p>
+
+<p align="center">
+  <a href="#why-kaihatch">Why KaiHatch?</a> ·
+  <a href="#features">Features</a> ·
+  <a href="#screenshots">Screenshots</a> ·
+  <a href="#supported-formats">Formats</a> ·
+  <a href="#installation--updates">Install</a> ·
+  <a href="#safety--limitations">Safety</a>
 </p>
 
 ---
+
+## Why KaiHatch?
+
+Ordinarily, extracting a large archive means keeping **the original archive and the extracted files** on your device at the same time. When storage is almost full, that can be a problem.
+
+KaiHatch gives you two choices:
+
+| **Standard Extraction** | **In-Place Extraction (Hatch Mode)** |
+| --- | --- |
+| Keeps the original archive untouched. | Progressively consumes the source archive and reclaims its space during extraction. |
+| Best when you want to preserve the original. | Best when available storage is limited and you no longer need the full original archive. |
+
+For example, when a 1 GB archive contains 2 GB of files, Standard Mode may need roughly 2 GB of **additional** free space. Hatch Mode can reuse space released from the archive as extraction progresses. The actual peak requirement depends on the archive's contents, working space, and your storage provider—so KaiHatch shows a **Storage Planner** before you start.
+
+<p align="center">
+  <img src="docs/assets/kaihatch-overview.webp" alt="Standard extraction compared with progressive in-place extraction" width="760" />
+</p>
+
+> **Important:** Hatch Mode is destructive. It changes and progressively shrinks the original archive. Choose **Standard Extraction** when keeping your original archive is essential.
+
+## Features
+
+### Extract with confidence
+
+- **Storage Planner:** Compare estimated peak storage needs for Standard and Hatch modes, including temporary working space and a safety reserve.
+- **Verify Before Hatch:** Run a read-only **Quick Check** for structure and headers, or **Full Verify** to stream supported payloads and check integrity/CRC32 without changing the source.
+- **Live extraction controls:** Follow progress, speed, reclaimed space, verification status, and Pause / Resume / Stop actions.
+- **Archive preview and browsing:** Inspect archive contents and browse your extracted files; create new archives through **Pack Studio**.
+
+### Recover from interruptions
+
+- **Crash-safe checkpoints:** Recovery journals and transactional checkpoints help preserve progress across supported interrupted Hatch Mode operations, including recoverable large DEFLATE tail-swaps.
+- **Resume extraction:** Continue an eligible interrupted extraction after an unexpected app shutdown.
+- **Restore Remaining ZIP:** Rebuild a usable ZIP/ZIP64 archive **in place** from entries that have not yet been extracted, when recovery checks permit it. A deliberate Stop also attempts safe ZIP restoration.
+- **Persistent I/O Console:** Keep extraction and recovery logs across app sessions until you clear them.
+
+Recovery and restoration are **conditional**, not guaranteed after every interruption. See [Safety & Limitations](#safety--limitations).
+
+### Built for Android
+
+- **Material 3 Expressive UI:** Animated, expandable Settings; themes, accent palettes, and haptic feedback.
+- **32 language options:** In-app language picker, with system-language selection where supported.
+- **Local storage support:** Internal storage, Downloads, and compatible SD/USB storage via Android's Storage Access Framework (SAF). Optional **All Files Access** can improve direct local-file access and recovery compatibility.
+- **Built-in GitHub updates:** Check for a new stable release in **Settings → About**, receive update notifications, and download an APK verified against its SHA-256, package, version, and signing certificate. Installation uses Android's system installer and requires your confirmation.
+
+<details>
+<summary><strong>View all 32 supported language options</strong></summary>
+
+English · Spanish · French · German · Italian · Portuguese (Brazil) · Portuguese (Portugal) · Dutch  
+Russian · Ukrainian · Polish · Czech · Romanian · Hungarian · Greek · Turkish  
+Swedish · Danish · Norwegian Bokmål · Finnish · Arabic · Hebrew · Persian  
+Japanese · Korean · Chinese (Simplified) · Chinese (Traditional) · Indonesian · Malay · Vietnamese · Thai · Filipino
+
+</details>
 
 ## Screenshots
 
-Captured on a Google Pixel 8.
-
-### Unpacking & Storage Efficiency
-
-Select a local archive, choose between in-place Hatch Mode and non-destructive Standard Mode, and inspect estimated peak storage savings before unpacking begins.
+**Plan, inspect, and verify**
 
 <p align="center">
-  <img src="docs/screenshots/01-home.png" alt="KaiHatch home screen with archive selection and saved storage summary" width="30%" />
+  <a href="docs/screenshots/10-unpack-setup.png"><img src="docs/screenshots/10-unpack-setup.png" alt="Archive selected with extraction modes" width="30%" /></a>
   &nbsp;
-  <img src="docs/screenshots/02-extraction-setup.png" alt="Archive extraction setup with Hatch Mode enabled and entry overview" width="30%" />
+  <a href="docs/screenshots/11-storage-planner.png"><img src="docs/screenshots/11-storage-planner.png" alt="Estimated peak storage comparison" width="30%" /></a>
   &nbsp;
-  <img src="docs/screenshots/03-storage-comparison.png" alt="Storage footprint comparison between Standard Mode and Hatch Mode" width="30%" />
+  <a href="docs/screenshots/12-verify-before-hatch.png"><img src="docs/screenshots/12-verify-before-hatch.png" alt="Quick Check and Full Verify results" width="30%" /></a>
 </p>
 
-### Extraction in Action
-
-Follow live extraction progress as archive space is reclaimed in place, then browse and open unpacked files directly from local storage.
+**Extract, recover, and manage**
 
 <p align="center">
-  <img src="docs/screenshots/04-live-extraction.png" alt="Live Hatch Mode extraction with floating Actions control and progress outline" width="30%" />
+  <a href="docs/screenshots/13-live-extraction.png"><img src="docs/screenshots/13-live-extraction.png" alt="Live in-place extraction with reclaimed storage" width="30%" /></a>
   &nbsp;
-  <img src="docs/screenshots/extraction-actions-expanded.png" alt="Live Hatch Mode extraction with expanded Pause and Stop controls" width="30%" />
+  <a href="docs/screenshots/14-crash-recovery.png"><img src="docs/screenshots/14-crash-recovery.png" alt="Resume extraction or restore remaining ZIP" width="30%" /></a>
   &nbsp;
-  <img src="docs/screenshots/05-extracted-files.png" alt="Extracted files browser with direct file actions" width="30%" />
+  <a href="docs/screenshots/15-settings-permissions.png"><img src="docs/screenshots/15-settings-permissions.png" alt="Expandable Settings and permissions" width="30%" /></a>
 </p>
 
-During an active extraction, the floating button displays a Pause icon and an **Actions** label while its rounded-square outline tracks live extraction progress. Tapping **Actions** expands the control to reveal **Pause**/**Resume** and **Stop** without immediately interrupting the job. Selecting **Pause** temporarily suspends the active extraction session at a safe checkpoint, and **Resume** continues that same session from where it paused. Selecting **Stop** opens a confirmation dialog before cancelling extraction.
-
-### Archive Creation
-
-Pack local files and folders into new archives with configurable format and compression options in Pack Studio.
+**Make it yours**
 
 <p align="center">
-  <img src="docs/screenshots/06-pack-studio.png" alt="Pack Studio screen for creating new archives" width="30%" />
+  <a href="docs/screenshots/16-language-picker.png"><img src="docs/screenshots/16-language-picker.png" alt="Searchable app language picker" width="34%" /></a>
 </p>
 
-### Settings & Personalization
-
-Customize Light, Dark, or System themes and accent palettes, manage persistent local folder access and unpacking defaults, and access project links and open-source licenses.
+<details>
+<summary>First-launch onboarding and permissions</summary>
 
 <p align="center">
-  <img src="docs/screenshots/07-appearance.png" alt="Settings screen showing theme modes and expressive accent color palettes" width="30%" />
-  &nbsp;
-  <img src="docs/screenshots/08-storage-settings.png" alt="Settings screen showing persistent folder access and unpacking options" width="30%" />
-  &nbsp;
-  <img src="docs/screenshots/09-about.png" alt="Settings About card with KaiHatch branding, contact links, Ko-fi support, and open-source licenses" width="30%" />
+  <a href="docs/screenshots/17-onboarding-permissions.png"><img src="docs/screenshots/17-onboarding-permissions.png" alt="Optional notifications, All Files Access, and destination setup" width="38%" /></a>
 </p>
 
----
+</details>
 
-## Key Features
+## Supported formats
 
-| | Feature | Description |
-| :---: | :--- | :--- |
-| <img src="docs/assets/features/progressive-extraction.svg" width="32" height="32" alt="Progressive extraction" /> | **Progressive In-Place Extraction** | Extracts entries from the tail of the archive backward and truncates the source file after each entry is committed, reclaiming free space during extraction. |
-| <img src="docs/assets/features/integrity-check.svg" width="32" height="32" alt="Integrity check" /> | **Verify Before Truncate** | Validates extracted output against archive `CRC32` checksums and syncs data to disk (`fsync`) before removing corresponding bytes from the archive. |
-| <img src="docs/assets/features/local-storage.svg" width="32" height="32" alt="Local storage" /> | **Direct Local & SAF Storage Access** | Works directly on writable local Android storage—including **Downloads** and **Internal / SD Card Storage** via Android's Storage Access Framework (`"rw"` file descriptors). |
-| <img src="docs/assets/features/appearance.svg" width="32" height="32" alt="Appearance" /> | **Adaptive Material 3 Interface** | Clean, distraction-free Android UI with Light, Dark, and System themes, real-time storage telemetry, and built-in Space Lab storage modeling. |
-| <img src="docs/assets/features/extraction-controls.svg" width="32" height="32" alt="In-session extraction controls" /> | **In-Session Extraction Controls** | Pause and resume an active extraction session at safe checkpoints, access **Pause**/**Resume** and **Stop** through the floating **Actions** control, and confirm before stopping extraction. |
+| Format | Standard Extraction | Hatch Mode | Notes |
+| --- | :---: | :---: | --- |
+| ZIP / ZIP64 / JAR / APK | ✅ | ✅ | In-place support for compatible `STORED` and `DEFLATE` entries; eligible ZIP/ZIP64 restoration. |
+| TAR (uncompressed) | ✅ | ✅ | Header/checksum validation; TAR does not carry per-file CRC32 checksums. |
+| 7z (non-solid) | ✅ | ✅* | Hatch Mode requires independently accessible blocks and compatible storage. |
+| 7z (solid) | ✅ | ❌ | Use Standard Extraction. |
+| TAR.GZ / TGZ / GZ | ✅ | ❌ | Forward-only compressed stream; Standard Extraction only. |
 
----
+\* Actual Hatch Mode eligibility depends on the archive layout and the storage provider. KaiHatch does not silently switch from Hatch Mode to Standard Extraction when an in-place operation is unsupported.
 
-## How Hatch Mode Works
+**Passwords:** Password-based extraction is available for compatible archives, including supported ZipCrypto ZIP and 7z cases. Not every encryption or compression method is supported; unsupported entries are rejected rather than assumed safe for Hatch Mode.
 
-Conventional archive extractors read from the beginning of an archive and keep the entire archive file on disk until every file is unpacked.
+## How Hatch Mode works
 
 <p align="center">
-  <img src="docs/assets/hatch-mode.webp" alt="Hatch Mode: Extract, Verify, Reclaim" width="680" />
+  <img src="docs/assets/hatch-mode.webp" alt="Extract, verify, and reclaim archive space" width="680" />
 </p>
 
-KaiHatch's **Hatch Mode** reduces peak storage usage through four mechanisms:
+1. **Inspect and plan.** Read the archive index, check storage capabilities, and estimate working-space requirements.
+2. **Work backwards.** Process eligible archive entries in reverse physical order, starting near the end of the file.
+3. **Extract and verify.** Write output, check applicable checksums, and sync completed data before reclaiming the corresponding source space.
+4. **Record progress.** Persist recovery checkpoints before destructive changes. Large `STORED`/`DEFLATE` entries use additional bounded/chunked extraction strategies where applicable.
+5. **Reclaim space.** Progressively truncate the source archive as verified work completes.
 
-1. **Reverse Physical Offset Ordering:** Archive entries are sorted in descending order of their physical byte offset (`headerOffset` / `dataOffset`). The entry closest to the end of the archive is extracted first.
-2. **Verify-Before-Truncate:** Each entry is extracted to its destination path, verified against its archive `CRC32` (for `STORED` and `DEFLATE` ZIP entries and `.7z` entries where present), and synced to disk (`fsync`) **before** the source archive is truncated.
-3. **Progressive `ftruncate` Shrinking:** Once an entry's output is durably committed and verified, the source archive file descriptor (or local SAF `ParcelFileDescriptor` opened in `"rw"` mode) is truncated down to that entry's starting offset via `Os.ftruncate`, immediately returning storage blocks to the filesystem.
-4. **Decompress-First Large-Entry Tail-Swap:** When a single large entry (`STORED` or `DEFLATE`) cannot fit alongside the full source archive:
-   - **Reverse-Slice `STORED` Extraction:** Uncompressed `STORED` entries are copied in reverse slices from the tail of the archive and truncated slice-by-slice, with the final forward pass verifying the full `CRC32`.
-   - **Decompress-First `DEFLATE` Tail-Swap:** Using Java's native `Inflater`, KaiHatch first decompresses the entry from `slot 0` through `N`, capturing the initial decompressed chunk (`chunk 0`) into a temporary tail file while streaming subsequent chunks (`1..N`) to the destination file and verifying the full `CRC32` **before** any source bytes are modified. Only after full decompression and CRC verification succeed does it truncate the tail of the source archive, copy `chunk 0` into `slot 0` of the archive, shift chunks `1..N` into place, truncate any remaining padding, and atomically rename the file.
+For recoverable interruptions, KaiHatch validates its saved journal, source archive, and output before presenting **Resume** or **Restore Remaining ZIP**. ZIP restoration rebuilds the remaining archive's directory metadata **without creating a second full archive or recompressing the remaining payloads**.
 
----
+## Installation & updates
 
-## Standard Mode vs. Hatch Mode & Safety Warning
+1. Open [**GitHub Releases**](https://github.com/biplov13b/KaiHatch/releases) and download the latest published KaiHatch APK.
+2. If supplied, verify the APK using the accompanying `.sha256` checksum file.
+3. Open the APK on **Android 7.0 or newer** and approve installation in Android's installer.
+4. Complete onboarding: select a language/theme, choose an extraction destination, and optionally allow notifications and **All Files Access** (where supported).
 
-<p align="center">
-  <img src="docs/assets/extraction-modes.svg" alt="Standard Mode versus Hatch Mode comparison and safety warning" width="780" />
-</p>
+**Updating:** KaiHatch can check GitHub for newer stable releases, download a verified APK, and hand it to Android's installer. You can check manually under **Settings → About → Check for Updates**. Updating an existing installation requires the new APK to have a **higher `versionCode`** and the **same signing certificate**.
 
-| Behavior | Standard Mode | Hatch Mode |
-| :--- | :--- | :--- |
-| **Original archive file** | Preserved untouched | Progressively shrunk and consumed |
-| **Peak extra free space needed** | Full uncompressed size of all files | Only a single entry or bounded working chunk at a time |
-| **Best used when** | You have plenty of free space or want to keep the archive | Free storage is tight and you no longer need the archive after unpacking |
-| **Effect of mid-extraction interruption** | Original archive remains completely intact | Already-truncated tail entries are removed from the archive; interrupting a final single-entry tail-swap can leave the archive unrecoverable |
+Archive extraction, verification, browsing, and compression work **offline**. Network access is used for GitHub update checks/downloads, not for processing your archives.
 
-> **WARNING — Destructive In-Place Operation:**
->
-> **Hatch Mode modifies, truncates, and ultimately deletes the original archive file in place** in order to extract archives when free disk space is smaller than the archive itself.
->
-> Hatch Mode is **not** risk-free. Because it alters the original archive file on disk, interrupting extraction during specific destructive phases (or encountering corrupted archive entries mid-stream) can leave the original archive partially consumed or unrecoverable. Always use **Standard Mode** when you have sufficient free storage or cannot afford to lose the original archive. See [Known Limitations & Safety Disclosures](#known-limitations--safety-disclosures) below for full technical details.
+## Safety & limitations
 
-When you select **Stop** from the expanded extraction controls, KaiHatch presents a confirmation dialog before cancelling the job: stopping **Standard Mode** leaves the original archive intact, whereas stopping **Hatch Mode** after progressive source consumption has begun may leave the remaining archive unreadable.
+- **Hatch Mode consumes the source.** Already-extracted entries have been removed from it; **Restore Remaining ZIP does not recreate the original complete archive**.
+- **Recovery is eligibility-checked.** It requires intact checkpoints and accessible, consistent source/output files. Unexpected storage errors, external file changes, deleted app data, or unsupported providers may prevent recovery. If checks fail, KaiHatch refuses potentially unsafe recovery.
+- **Restoration is format-limited.** In-place **Restore Remaining ZIP** applies to eligible ZIP/ZIP64 archives, not solid 7z, TAR, or arbitrary split archives.
+- **Provider capabilities matter.** Hatch Mode needs seekable, writable storage with reliable positional I/O, truncation, and syncing. Some SAF/cloud-backed or read-only providers cannot support it. SAF remains available without optional All Files Access, subject to provider capabilities.
+- **Pre-verification varies by format.** ZIP CRC32 checks provide payload-integrity verification when supported; TAR's header checksum cannot establish end-to-end payload integrity.
+- **A pre-extraction check is not a guarantee.** Hardware failures, damaged archives, or changes in free space can still interrupt extraction. Use Standard Extraction when preserving the archive is more important than saving space.
 
----
+## Build & test
 
-## Supported Archive Formats & Limitations
+**Requirements:** JDK 17+, an Android SDK compatible with the project's configured SDK, and Android Studio or Gradle.
 
-| Format | Extensions | Hatch Mode (In-Place Shrinking) | Standard Mode (Non-Destructive) | Notes & Constraints |
-| :--- | :--- | :---: | :---: | :--- |
-| **ZIP / ZIP64 / JAR / APK** | `.zip`, `.jar`, `.apk` | **Yes** (`STORED` & `DEFLATE`) | **Yes** | Full `CRC32` verification on all entries; reverse-offset extraction and progressive `ftruncate`. |
-| **TAR (Uncompressed)** | `.tar` | **Yes** | **Yes** | Validated via POSIX `ustar` header magic and header checksum before extraction. |
-| **7z (Non-Solid)** | `.7z` | **Yes** (Independent blocks) | **Yes** | Requires independent per-entry folder blocks (`folderIndex >= 0`) with monotonically aligned physical stream offsets. |
-| **7z (Solid)** | `.7z` | **No** (Explicitly rejected) | **Yes** | Solid `.7z` archives share a single forward-only LZMA/LZMA2 dictionary across entries and cannot be truncated from the tail. |
-| **GZIP-Compressed TAR / GZIP** | `.tar.gz`, `.tgz`, `.gz` | **No** (Standard stream only) | **Yes** | Single continuous forward-only DEFLATE stream; cannot be truncated from the tail without invalidating earlier stream state. |
-
-> **No Silent Fallback Policy:** When **Hatch Mode** is selected, KaiHatch never silently falls back to Standard Mode. If the selected archive format (e.g., solid `.7z`) or the underlying storage provider does not support writable in-place truncation, extraction fails immediately with a clear error message explaining why Hatch Mode cannot proceed.
-
----
-
-## Installation & APK Download Instructions
-
-Official signed APK builds are distributed through [**GitHub Releases**](https://github.com/biplov13b/KaiHatch/releases) once published.
-
-1. **Open GitHub Releases:**
-   - Visit the official [**KaiHatch Releases**](https://github.com/biplov13b/KaiHatch/releases) page. *(If no release is listed yet, the first public signed APK is still being prepared for publication.)*
-2. **Download the APK:**
-   - Locate the latest release, expand the **Assets** section, and download the `KaiHatch-<version>.apk` file (an accompanying `.sha256` checksum file is also provided to verify download integrity).
-3. **Install on Android:**
-   - Open the downloaded `.apk` file on a device running **Android 7.0 (API 24) or newer** and allow installation from your browser or file manager if prompted.
-4. **First-Launch Setup:**
-   - On first launch, KaiHatch walks you through a brief 4-screen onboarding flow where you can choose your preferred theme (**Light**, **Dark**, or **System**) and optionally grant a default local destination folder (such as `Download`).
-
----
-
-## Technical Architecture & Storage Compatibility
-
-- **Language & UI:** 100% Kotlin and Jetpack Compose (Material 3)
-- **Minimum Android Version:** Android 7.0 (API 24 / `minSdk = 24`)
-- **Target / Compile SDK:** Android 16 (API 36 / `compileSdk = 36`, `targetSdk = 36`)
-- **Supported Local Storage Providers (Hatch Mode):**
-  - Direct local filesystem paths (`java.io.File` / `RandomAccessFile` / `FileChannel`)
-  - Local files selected via Android's Storage Access Framework (SAF) system picker (`Intent.ACTION_OPEN_DOCUMENT`) backed by local block storage—such as **Downloads** (`com.android.providers.downloads.documents`) and **Internal / SD Card Storage** (`com.android.externalstorage.documents`)—that grant `"rw"` `ParcelFileDescriptor` access and support `Os.ftruncate` and positional `pwrite`.
-- **Unsupported Providers for Hatch Mode:**
-  - Read-only SAF providers, virtual documents (`COLUMN_FLAGS & FLAG_VIRTUAL_DOCUMENT`), pipe/socket descriptors (`FIFO`), and cloud-backed document providers that do not expose a seekable, truncatable `"rw"` file descriptor. (Cloud storage integration is outside the scope of KaiHatch.)
-
----
-
-## Building & Testing
-
-### Prerequisites
-- **JDK:** Java 17 or newer
-- **Android SDK:** API 36 installed (`ANDROID_HOME` / `ANDROID_SDK_ROOT` configured)
-
-### Build Debug APK
 ```bash
 ./gradlew :app:assembleDebug
-```
-The compiled debug APK is generated under `app/build/outputs/apk/debug/`.
-
-### Run Unit & Robolectric Regression Tests
-KaiHatch includes a JVM and Robolectric test suite covering fault injection, crash-consistent write-ahead journal recovery, large-DEFLATE decompress-first ordering, `CRC32` integrity verification, `.7z` solid/non-solid handling, and local SAF descriptor compatibility:
-
-```bash
 ./gradlew :app:testDebugUnitTest
 ```
 
-> **Note on Expected Test Failure in Baseline Fault-Injection Suite:**
-> `ExtractionBaselineAndFaultInjectionTest.faultInjection_largeDeflateTailSwap_tornWriteAndCrash_mustRecoverValidSha256OnResume` is an intentionally retained fault-injection test documenting the unrecoverable mid-`slot 0` torn-write window described in [Known Limitations & Safety Disclosures](#known-limitations--safety-disclosures) below. It is kept active and unsuppressed so this recovery boundary remains visible; if CI is configured to run unit tests, this test may be explicitly classified as a known expected failure while remaining visible.
+The regression suite covers recovery checkpoints, fault injection, ZIP restoration, SAF compatibility, archive integrity, storage planning, localization, and updating. Some Robolectric SDK dependencies may require network access on the first test run.
 
----
+## Credits, support & license
 
-## Known Limitations & Safety Disclosures
+KaiHatch brings the storage-saving extraction idea of [**HatchZip**](https://github.com/xevrion/hatchzip), created by **[xevrion](https://github.com/xevrion)**, to Android. KaiHatch's application is implemented in Kotlin and Jetpack Compose, with its own Android interface and additional features.
 
-1. **Large Single-Entry Tail-Swap Unrecoverable Window:** When extracting a single large entry whose uncompressed output exceeds available free storage, KaiHatch performs an in-place tail-swap that overwrites the beginning of the archive (`slot 0`) after the entry has been decompressed and CRC-verified. If the process is killed, the device loses power, or an I/O failure occurs **after** `slot 0` overwrite has begun and before the final `fsync` + `rename` completes, the original compressed header at `slot 0` is already overwritten and **the archive cannot be recovered**.
-2. **Mid-Stream Integrity / Decompression Failure After Partial Consumption:** In multi-entry archives, each completed entry at the tail of the archive is immediately truncated off the source archive. If a later entry at an earlier byte offset fails `CRC32` verification or decompression, all previously extracted entries remain valid on disk, and KaiHatch halts before deleting the remaining prefix of the archive—but the already-truncated tail entries are no longer present inside the source archive file.
-3. **External Modification While Interrupted:** If an external app modifies or truncates an interrupted Hatch Mode archive so its actual descriptor size or `slot 0` header CRC (`slot0Crc`) no longer matches the write-ahead recovery journal checkpoint, journal recovery is blocked to prevent silent corruption.
-4. **Solid `.7z` and `.tar.gz` Archives:** Progressive tail-truncation is mathematically impossible on single-dictionary solid `.7z` streams and `.tar.gz` streams without decompressing from byte `0`. Use **Standard Mode** for these formats.
-5. **Encrypted Archives:** Password-protected and AES-encrypted `.zip` and `.7z` archives are detected and rejected with an explicit unsupported-encryption error.
-6. **SAF Destination Directory Permissions:** Extracting via SAF requires selecting a writable local output folder via `ACTION_OPEN_DOCUMENT_TREE`.
-7. **In-Session Pause/Resume Scope:** Pause/Resume preserves the active extraction session in memory only while the app process remains alive; it does not guarantee continuation after force-closing the app, OS process termination, or a device reboot (and is separate from the write-ahead journal recovery mechanism for interrupted Hatch Mode truncations).
+Built and maintained by Biplov. Feedback and bug reports are welcome in [GitHub Issues](https://github.com/biplov13b/KaiHatch/issues). You can support development on [Ko-fi](https://ko-fi.com/biplov13b).
 
----
-
-## Support Development
-
-KaiHatch is an independent open-source project built and maintained by Biplov.
-
-If KaiHatch saves your storage space or helps you unpack large archives on Android, you can support ongoing development on Ko-fi:
-
-https://ko-fi.com/biplov13b
-
----
-
-## License, Inspiration & Third-Party Acknowledgments
-
-### Inspiration & Independence Notice
-KaiHatch was inspired by the progressive in-place extraction concept of [**HatchZip**](https://github.com/Fabiannez/HatchZip).
-
-**KaiHatch is an independent Android implementation** written in Kotlin and Jetpack Compose. It shares no source code with HatchZip and is **not affiliated with, endorsed by, or an official release of the HatchZip project**.
-
-### License
-Copyright 2026 Biplov Biswas
-
-Licensed under the **Apache License, Version 2.0**. See [`LICENSE`](LICENSE), [`NOTICE`](NOTICE), and [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) for full license terms and third-party software attributions.
+Copyright 2026 Biplov Biswas. Licensed under the **Apache License, Version 2.0**. See [LICENSE](LICENSE), [NOTICE](NOTICE), and [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
