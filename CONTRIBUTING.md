@@ -60,7 +60,9 @@ Run a specific test class:
 ./gradlew :app:testDebugUnitTest --tests com.biplov.kaihatch.ExampleRobolectricTest
 ```
 
-> **Note on `ExtractionBaselineAndFaultInjectionTest`:** The regression suite includes an intentional fault-injection test (`faultInjection_largeDeflateTailSwap_tornWriteAndCrash_mustRecoverValidSha256OnResume`) that documents the known mid-`slot 0` torn-write limitation in large-`DEFLATE` tail-swap extraction. Do not delete or mask this test unless your change specifically resolves that architectural limitation with full verification.
+> **Recovery and fault-injection tests:** `ExtractionBaselineAndFaultInjectionTest` includes `faultInjection_largeDeflateTailSwap_tornWriteAndCrash_mustRecoverValidSha256OnResume`. The test verifies that eligible interruptions with intact transactional checkpoints resume and reproduce the expected SHA-256, while corrupted checkpoints are rejected safely. Treat test failures as regressions to investigate; do not mark them as expected or bypass the safety assertions.
+>
+> **Robolectric environment:** Some tests need Android runtime artifacts downloaded by Robolectric. A dependency-download failure (for example, a Maven Central HTTP 429) is an infrastructure issue, not a passing test result. Rerun when the required artifacts are available, and distinguish unexecuted tests from passing tests.
 
 ---
 
@@ -82,20 +84,20 @@ Run a specific test class:
 
 ## Extra Care for Extraction, Integrity & Storage Code
 
-**Hatch Mode is intentionally destructive to the source archive.** Because it extracts entries from the end of a `.zip` / `.apk` archive and progressively shrinks the source file in place via `Os.ftruncate(FileDescriptor, Long)`, bugs in offset math, ordering, synchronization, or error handling can permanently corrupt user data.
+**In-Place Extraction (Hatch Mode) intentionally modifies and consumes the source archive.** On compatible seekable and writable storage, the engine progressively reclaims source space as eligible archive entries are extracted. Bugs in offset math, extraction order, durability, checkpointing, or storage-provider handling can permanently damage user data. **Standard Extraction must preserve the original archive.**
 
-When modifying `KaiHatchEngine`, `ZipParser`, `ResumeJournalManager`, `HatchCompressEngine`, or `StorageHelper`:
+When modifying `KaiHatchEngine`, `ZipParser`, `ResumeJournalManager`, `ZipInPlaceRestoreEngine`, `CheckpointableInflateEngine`, `HatchCompressEngine`, or `StorageHelper`:
 
-1. **Preserve Extraction Ordering & Synchronization:**
-   - Never truncate a byte range of the source archive before the corresponding output file (or tail-swap slot) has been written, verified, and flushed (`fsync`) to disk.
-2. **Preserve Integrity Verification:**
-   - Maintain `CRC32` verification against central directory headers before any truncation step occurs.
-3. **Preserve Recovery Journaling:**
-   - Ensure `ResumeJournalManager` state updates remain atomic (`write temp` -> `fsync` -> `rename`) so interrupted extractions can be detected accurately.
-4. **Respect Format & Storage Boundaries:**
-   - Only local seekable `.zip` and `.apk` archives with a writable POSIX file descriptor support progressive in-place shrinking. Sequential stream formats (`.tar`, `.tar.gz`, `.tar.bz2`, `.tar.xz`, `.gz`, `.bz2`, `.xz`) and `.7z` archives must remain non-destructive during extraction and only remove the source archive after full extraction verification when requested.
+1. **Preserve Extraction Ordering & Durability:**
+   - Never reclaim source bytes until the corresponding output or recoverable in-progress state has been safely written, validated, and durably synchronized. Keep source truncation, tail-swap operations, and recovery checkpoints in their verified transactional order.
+2. **Preserve Format-Specific Integrity Checks:**
+   - For ZIP/ZIP64, retain appropriate header validation and CRC32 checks against archive metadata. Apply the correct validation rules to TAR and 7z rather than assuming every format has ZIP-style central-directory CRC32 fields. Reject unsupported or unsafe archive layouts.
+3. **Preserve Recovery Journaling and Restoration:**
+   - Keep `ResumeJournalManager` writes atomic and durable (`write temp` → `fsync` → `rename`, with the required backup/checkpoint ordering). Validate source, output, and saved checkpoints before offering Resume or Restore Remaining ZIP. Restoration is available only for eligible ZIP/ZIP64 cases and recreates **remaining entries**, not the original full archive. Corrupted or missing recovery data must fail closed.
+4. **Respect Format and Storage Boundaries:**
+   - Hatch Mode supports compatible ZIP/ZIP64/JAR/APK (`STORED`/`DEFLATE`), uncompressed TAR, and eligible non-solid 7z archives. Solid 7z and gzip-based compressed streams (including `.tar.gz`, `.tgz`, and `.gz`) use Standard Extraction. In-place operations additionally require a seekable, writable provider with working positional I/O, truncation, and durable sync; supported local SAF-backed storage may qualify. Do not silently switch an unsupported Hatch operation into Standard Extraction or remove source data on failure.
 5. **Keep Changes Focused:**
-   - Submit one logical change per pull request with clear commit messages and corresponding unit/Robolectric tests.
+   - Submit one logical change per pull request with clear commit messages and corresponding unit/Robolectric tests. For destructive-path changes, include failure-injection and recovery or rollback coverage where applicable.
 
 ---
 
