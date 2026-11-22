@@ -9,9 +9,9 @@ This document lists the conceptual inspiration and third-party libraries used by
 ## Conceptual Inspiration
 
 ### HatchZip
-- **Project**: [HatchZip](https://github.com/Fabiannez/HatchZip)
-- **Relationship**: Conceptual inspiration for reverse-order, progressive in-place archive extraction ("Hatch Mode").
-- **Independence Notice**: KaiHatch is an independent Android implementation written in Kotlin and Jetpack Compose. It contains no HatchZip source code and has no official affiliation with or endorsement from the HatchZip author or project.
+- **Project**: [HatchZip by xevrion](https://github.com/xevrion/hatchzip)
+- **Relationship**: Android port of HatchZip's progressive in-place archive extraction concept, with additional features.
+- **Implementation**: KaiHatch uses a separate Kotlin and Jetpack Compose implementation and contains no HatchZip source code.
 
 ---
 
