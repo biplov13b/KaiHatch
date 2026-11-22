@@ -11,12 +11,12 @@ You may obtain a copy of the License at
 Conceptual Inspiration & Attribution
 ================================================================================
 
-KaiHatch was inspired by the concept of progressive in-place archive extraction
-demonstrated by HatchZip (https://github.com/Fabiannez/HatchZip).
+KaiHatch is an Android port of HatchZip by xevrion, bringing its progressive
+in-place archive extraction concept to Android with additional features:
+https://github.com/xevrion/hatchzip
 
-KaiHatch is an independent Android implementation written in Kotlin and Jetpack
-Compose. It does not include source code from HatchZip and is not affiliated
-with, endorsed by, or an official release of the HatchZip project.
+KaiHatch has its own Kotlin and Jetpack Compose implementation and does not
+include source code from HatchZip.
 
 ================================================================================
 Third-Party Software Notices
