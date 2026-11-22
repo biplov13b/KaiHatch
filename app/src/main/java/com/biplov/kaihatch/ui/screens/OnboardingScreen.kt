@@ -9,6 +9,8 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -41,17 +43,20 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ArrowForward
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Bolt
 import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.FolderSpecial
+import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
+import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.SettingsBrightness
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.Warning
@@ -66,27 +71,40 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.biplov.kaihatch.R
 import com.biplov.kaihatch.data.GrantedFolderInfo
+import com.biplov.kaihatch.data.StorageHelper
+import com.biplov.kaihatch.model.AppLanguage
 import com.biplov.kaihatch.model.AppThemeMode
 import com.biplov.kaihatch.ui.HatchViewModel
 import com.biplov.kaihatch.ui.components.ExpressiveCloverIcon
+import com.biplov.kaihatch.ui.components.ExpressiveMotion
+import com.biplov.kaihatch.ui.components.LanguagePickerDialog
+import com.biplov.kaihatch.ui.components.HapticUtil
 import com.biplov.kaihatch.ui.theme.JetBrainsMonoFontFamily
 
 private const val TOTAL_ONBOARDING_STEPS = 4
@@ -99,11 +117,16 @@ fun OnboardingScreen(
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
-    val notificationsEnabled by viewModel.notificationsEnabled.collectAsState()
-    val grantedFolder by viewModel.grantedFolder.collectAsState()
-    val themeMode by viewModel.themeMode.collectAsState()
+    val notificationsEnabled by viewModel.notificationsEnabled.collectAsStateWithLifecycle()
+    val allFilesAccessEnabled by viewModel.allFilesAccessEnabled.collectAsStateWithLifecycle()
+    val isAllFilesAccessSupported = remember { StorageHelper.isAllFilesAccessSupportedOnDevice() }
+    val grantedFolder by viewModel.grantedFolder.collectAsStateWithLifecycle()
+    val themeMode by viewModel.themeMode.collectAsStateWithLifecycle()
+    val appLanguage by viewModel.appLanguage.collectAsStateWithLifecycle()
+    val isSystemLanguageSupported by viewModel.isSystemLanguageSupported.collectAsStateWithLifecycle()
 
     var currentStep by rememberSaveable { mutableIntStateOf(0) }
+    var showLanguagePicker by rememberSaveable { mutableStateOf(false) }
 
     BackHandler(enabled = currentStep > 0) {
         currentStep = (currentStep - 1).coerceAtLeast(0)
@@ -135,6 +158,31 @@ fun OnboardingScreen(
             viewModel.onFolderPermissionGranted(uri)
         } else {
             viewModel.onFolderPickerCancelled()
+        }
+    }
+
+    val allFilesAccessLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) {
+        viewModel.refreshPermissionsState()
+    }
+
+    val openAllFilesAccessSettings = {
+        try {
+            val intent = StorageHelper.createManageAllFilesAccessIntent(context)
+            allFilesAccessLauncher.launch(intent)
+        } catch (_: Exception) {
+            try {
+                allFilesAccessLauncher.launch(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION))
+            } catch (_: Exception) {
+                try {
+                    val appDetails = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                        data = Uri.fromParts("package", context.packageName, null)
+                    }
+                    allFilesAccessLauncher.launch(appDetails)
+                } catch (_: Exception) {
+                }
+            }
         }
     }
 
@@ -180,18 +228,26 @@ fun OnboardingScreen(
                         for (index in 0 until TOTAL_ONBOARDING_STEPS) {
                             val isActive = index == currentStep
                             val isCompleted = index < currentStep
+                            val pillWidth by animateDpAsState(
+                                targetValue = if (isActive) 28.dp else 10.dp,
+                                animationSpec = ExpressiveMotion.AccordionDpSpring,
+                                label = "onboarding_step_pill_width_$index"
+                            )
+                            val pillColorState = animateColorAsState(
+                                targetValue = when {
+                                    isActive -> primary
+                                    isCompleted -> primary.copy(alpha = 0.45f)
+                                    else -> MaterialTheme.colorScheme.surfaceContainerHighest
+                                },
+                                animationSpec = ExpressiveMotion.AccordionColorSpring,
+                                label = "onboarding_step_pill_color_$index"
+                            )
                             Box(
                                 modifier = Modifier
                                     .height(6.dp)
-                                    .width(if (isActive) 28.dp else 10.dp)
+                                    .width(pillWidth)
                                     .clip(CircleShape)
-                                    .background(
-                                        when {
-                                            isActive -> primary
-                                            isCompleted -> primary.copy(alpha = 0.45f)
-                                            else -> MaterialTheme.colorScheme.surfaceContainerHighest
-                                        }
-                                    )
+                                    .drawBehind { drawRect(color = pillColorState.value) }
                             )
                         }
                         Spacer(modifier = Modifier.width(6.dp))
@@ -211,7 +267,7 @@ fun OnboardingScreen(
                         modifier = Modifier.testTag("onboarding_skip_button")
                     ) {
                         Text(
-                            text = "Skip",
+                            text = stringResource(R.string.action_skip),
                             fontWeight = FontWeight.Bold,
                             fontSize = 13.sp,
                             color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -242,10 +298,16 @@ fun OnboardingScreen(
                             verticalArrangement = Arrangement.spacedBy(18.dp)
                         ) {
                             when (step) {
-                                0 -> OnboardingWelcomeStep()
+                                0 -> OnboardingWelcomeStep(
+                                    selectedLanguage = appLanguage,
+                                    isSystemLanguageSupported = isSystemLanguageSupported,
+                                    onOpenLanguagePicker = { showLanguagePicker = true }
+                                )
                                 1 -> OnboardingWhatIsKaiHatchStep()
                                 2 -> OnboardingPermissionsAndDestinationStep(
                                     notificationsEnabled = notificationsEnabled,
+                                    isAllFilesAccessSupported = isAllFilesAccessSupported,
+                                    allFilesAccessEnabled = allFilesAccessEnabled,
                                     grantedFolder = grantedFolder,
                                     onRequestNotifications = {
                                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !notificationsEnabled) {
@@ -266,6 +328,7 @@ fun OnboardingScreen(
                                             }
                                         }
                                     },
+                                    onRequestAllFilesAccess = openAllFilesAccessSettings,
                                     onSelectFolder = {
                                         folderPickerLauncher.launch(null)
                                     }
@@ -301,12 +364,12 @@ fun OnboardingScreen(
                         ) {
                             Icon(
                                 imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                                contentDescription = "Back",
+                                contentDescription = stringResource(R.string.action_back),
                                 modifier = Modifier.size(18.dp)
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Text(
-                                text = "Back",
+                                text = stringResource(R.string.action_back),
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 14.sp
                             )
@@ -329,14 +392,14 @@ fun OnboardingScreen(
                                 .testTag("onboarding_next_button")
                         ) {
                             Text(
-                                text = "Next",
+                                text = stringResource(R.string.action_next),
                                 fontWeight = FontWeight.ExtraBold,
                                 fontSize = 14.sp
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Icon(
                                 imageVector = Icons.AutoMirrored.Filled.ArrowForward,
-                                contentDescription = "Next",
+                                contentDescription = stringResource(R.string.action_next),
                                 modifier = Modifier.size(18.dp)
                             )
                         }
@@ -354,14 +417,14 @@ fun OnboardingScreen(
                                 .testTag("onboarding_get_started_button")
                         ) {
                             Text(
-                                text = "Get Started",
+                                text = stringResource(R.string.action_get_started),
                                 fontWeight = FontWeight.ExtraBold,
                                 fontSize = 14.sp
                             )
                             Spacer(modifier = Modifier.width(6.dp))
                             Icon(
                                 imageVector = Icons.AutoMirrored.Filled.ArrowForward,
-                                contentDescription = "Get Started",
+                                contentDescription = stringResource(R.string.action_get_started),
                                 modifier = Modifier.size(18.dp)
                             )
                         }
@@ -370,10 +433,25 @@ fun OnboardingScreen(
             }
         }
     }
+
+    if (showLanguagePicker) {
+        LanguagePickerDialog(
+            selectedLanguage = appLanguage,
+            onLanguageSelected = { language ->
+                viewModel.setAppLanguage(language)
+            },
+            onDismiss = { showLanguagePicker = false },
+            isSystemLanguageSupported = isSystemLanguageSupported
+        )
+    }
 }
 
 @Composable
-private fun OnboardingWelcomeStep() {
+private fun OnboardingWelcomeStep(
+    selectedLanguage: AppLanguage,
+    isSystemLanguageSupported: Boolean,
+    onOpenLanguagePicker: () -> Unit
+) {
     val primary = MaterialTheme.colorScheme.primary
     val primaryContainer = MaterialTheme.colorScheme.primaryContainer
     val onPrimaryContainer = MaterialTheme.colorScheme.onPrimaryContainer
@@ -393,18 +471,100 @@ private fun OnboardingWelcomeStep() {
 
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text(
-                text = "Welcome to KaiHatch",
+                text = stringResource(R.string.onboarding_welcome_title),
                 style = MaterialTheme.typography.headlineMedium,
                 fontWeight = FontWeight.ExtraBold,
                 color = MaterialTheme.colorScheme.onSurface
             )
 
             Text(
-                text = "Extract archives without needing twice the storage. KaiHatch makes room as it goes, helping you unpack files even when storage is limited.",
+                text = stringResource(R.string.onboarding_welcome_subtitle),
                 style = MaterialTheme.typography.bodyLarge,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 lineHeight = 24.sp
             )
+        }
+
+        // Material 3 Expressive full-width tonal row for App Language
+        val view = LocalView.current
+        val effectiveSelectedLanguage = if (selectedLanguage == AppLanguage.SYSTEM && !isSystemLanguageSupported) {
+            AppLanguage.ENGLISH
+        } else {
+            selectedLanguage
+        }
+        val selectedLanguageDisplayName = when (effectiveSelectedLanguage) {
+            AppLanguage.SYSTEM -> stringResource(R.string.language_system_default)
+            else -> effectiveSelectedLanguage.nativeName
+        }
+
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(18.dp))
+                .clickable(role = Role.Button) {
+                    HapticUtil.performUIHaptic(view)
+                    onOpenLanguagePicker()
+                }
+                .testTag("onboarding_language_selector"),
+            shape = RoundedCornerShape(18.dp),
+            color = MaterialTheme.colorScheme.surfaceContainerHigh,
+            border = BorderStroke(
+                width = 1.dp,
+                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.35f)
+            )
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    modifier = Modifier.weight(1f),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Surface(
+                        shape = CircleShape,
+                        color = primary.copy(alpha = 0.14f),
+                        modifier = Modifier.size(36.dp)
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(
+                                imageVector = Icons.Default.Language,
+                                contentDescription = null,
+                                tint = primary,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
+
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = stringResource(R.string.settings_language_title),
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = selectedLanguageDisplayName,
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold,
+                            color = primary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.75f),
+                    modifier = Modifier.size(20.dp)
+                )
+            }
         }
 
         Surface(
@@ -418,13 +578,13 @@ private fun OnboardingWelcomeStep() {
             ) {
                 OnboardingFeatureRow(
                     icon = Icons.Default.Bolt,
-                    title = "Progressive In-Place Unpacking",
-                    subtitle = "Reclaims space from the archive while files are extracted."
+                    title = stringResource(R.string.onboarding_feature_inplace_title),
+                    subtitle = stringResource(R.string.onboarding_feature_inplace_subtitle)
                 )
                 OnboardingFeatureRow(
                     icon = Icons.Default.Storage,
-                    title = "Built for Local Device Storage",
-                    subtitle = "Works directly with local archives without full temporary copies."
+                    title = stringResource(R.string.onboarding_feature_local_title),
+                    subtitle = stringResource(R.string.onboarding_feature_local_subtitle)
                 )
                 Surface(
                     shape = RoundedCornerShape(14.dp),
@@ -444,7 +604,7 @@ private fun OnboardingWelcomeStep() {
                             modifier = Modifier.size(16.dp)
                         )
                         Text(
-                            text = "Supports ZIP, ZIP64, APK, TAR, 7Z & RAR archives",
+                            text = stringResource(R.string.onboarding_supported_formats),
                             style = MaterialTheme.typography.labelMedium,
                             fontWeight = FontWeight.Bold,
                             color = onPrimaryContainer
@@ -475,7 +635,7 @@ private fun OnboardingWhatIsKaiHatchStep() {
         )
 
         Text(
-            text = "What's KaiHatch?",
+            text = stringResource(R.string.onboarding_what_is_title),
             style = MaterialTheme.typography.headlineMedium,
             fontWeight = FontWeight.ExtraBold,
             color = MaterialTheme.colorScheme.onSurface
@@ -491,26 +651,26 @@ private fun OnboardingWhatIsKaiHatchStep() {
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Text(
-                    text = "KaiHatch is an Android archive extractor built around genuine in-place extraction.",
+                    text = stringResource(R.string.onboarding_what_is_p1),
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.onSurface,
                     lineHeight = 21.sp
                 )
                 Text(
-                    text = "Unlike conventional extractors that keep the original archive intact while creating extracted files, Hatch Mode progressively reuses space from the archive itself.",
+                    text = stringResource(R.string.onboarding_what_is_p2),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     lineHeight = 21.sp
                 )
                 Text(
-                    text = "This means you can extract supported archives with significantly less additional free storage.",
+                    text = stringResource(R.string.onboarding_what_is_p3),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     lineHeight = 21.sp
                 )
                 Text(
-                    text = "You can also use Standard Mode for conventional extraction.",
+                    text = stringResource(R.string.onboarding_what_is_p4),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     lineHeight = 21.sp
@@ -536,12 +696,12 @@ private fun OnboardingWhatIsKaiHatchStep() {
             ) {
                 Icon(
                     imageVector = Icons.Default.Warning,
-                    contentDescription = "Important warning",
+                    contentDescription = stringResource(R.string.onboarding_warning_cd),
                     tint = MaterialTheme.colorScheme.tertiary,
                     modifier = Modifier.size(22.dp)
                 )
                 Text(
-                    text = "Important: Hatch Mode modifies the original archive. Interrupting extraction may leave it unrecoverable.",
+                    text = stringResource(R.string.onboarding_warning_text),
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onTertiaryContainer,
@@ -555,10 +715,14 @@ private fun OnboardingWhatIsKaiHatchStep() {
 @Composable
 private fun OnboardingPermissionsAndDestinationStep(
     notificationsEnabled: Boolean,
+    isAllFilesAccessSupported: Boolean,
+    allFilesAccessEnabled: Boolean,
     grantedFolder: GrantedFolderInfo?,
     onRequestNotifications: () -> Unit,
+    onRequestAllFilesAccess: () -> Unit,
     onSelectFolder: () -> Unit
 ) {
+    val view = LocalView.current
     val primary = MaterialTheme.colorScheme.primary
     val primaryContainer = MaterialTheme.colorScheme.primaryContainer
     val onPrimaryContainer = MaterialTheme.colorScheme.onPrimaryContainer
@@ -578,13 +742,13 @@ private fun OnboardingPermissionsAndDestinationStep(
 
         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(
-                text = "Permissions & Destination",
+                text = stringResource(R.string.onboarding_permissions_title),
                 style = MaterialTheme.typography.headlineSmall,
                 fontWeight = FontWeight.ExtraBold,
                 color = MaterialTheme.colorScheme.onSurface
             )
             Text(
-                text = "Configure optional notifications and choose where extracted files should be saved. You can change these anytime in Settings.",
+                text = stringResource(R.string.onboarding_permissions_subtitle),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 lineHeight = 20.sp
@@ -636,16 +800,16 @@ private fun OnboardingPermissionsAndDestinationStep(
                         }
                         Column {
                             Text(
-                                text = "Extraction Notifications",
+                                text = stringResource(R.string.onboarding_notifications_title),
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.ExtraBold,
                                 color = MaterialTheme.colorScheme.onSurface
                             )
                             Text(
                                 text = if (notificationsEnabled) {
-                                    "Enabled • Progress & completion alerts active"
+                                    stringResource(R.string.onboarding_notifications_enabled_subtitle)
                                 } else {
-                                    "Show extraction progress and completion notifications"
+                                    stringResource(R.string.onboarding_notifications_disabled_subtitle)
                                 },
                                 style = MaterialTheme.typography.bodySmall,
                                 color = if (notificationsEnabled) primary else MaterialTheme.colorScheme.onSurfaceVariant
@@ -671,7 +835,7 @@ private fun OnboardingPermissionsAndDestinationStep(
                                 modifier = Modifier.size(16.dp)
                             )
                             Text(
-                                text = "Permission Granted",
+                                text = stringResource(R.string.onboarding_permission_granted),
                                 style = MaterialTheme.typography.labelMedium,
                                 fontWeight = FontWeight.Bold,
                                 color = onPrimaryContainer
@@ -698,7 +862,7 @@ private fun OnboardingPermissionsAndDestinationStep(
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
-                            text = "Allow Notifications",
+                            text = stringResource(R.string.onboarding_allow_notifications),
                             fontWeight = FontWeight.Bold,
                             fontSize = 13.sp
                         )
@@ -707,7 +871,121 @@ private fun OnboardingPermissionsAndDestinationStep(
             }
         }
 
-        // Section B: Extraction Destination
+        // Section B: All Files Access (Optional)
+        if (isAllFilesAccessSupported) {
+            val statusBgColor by animateColorAsState(
+                targetValue = if (allFilesAccessEnabled) {
+                    primaryContainer
+                } else {
+                    MaterialTheme.colorScheme.surfaceContainerHigh
+                },
+                animationSpec = ExpressiveMotion.AccordionColorSpring,
+                label = "onboarding_all_files_status_bg"
+            )
+            Surface(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("onboarding_all_files_access_card"),
+                shape = RoundedCornerShape(24.dp),
+                color = MaterialTheme.colorScheme.surfaceContainer
+            ) {
+                Column(
+                    modifier = Modifier.padding(18.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size(42.dp)
+                                .clip(RoundedCornerShape(14.dp))
+                                .background(statusBgColor),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Security,
+                                contentDescription = null,
+                                tint = if (allFilesAccessEnabled) primary else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(22.dp)
+                            )
+                        }
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = stringResource(R.string.settings_all_files_access_title),
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.ExtraBold,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = stringResource(R.string.onboarding_all_files_access_subtitle),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    }
+
+                    if (allFilesAccessEnabled) {
+                        Surface(
+                            shape = RoundedCornerShape(50),
+                            color = primaryContainer,
+                            modifier = Modifier.testTag("onboarding_all_files_access_status")
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.CheckCircle,
+                                    contentDescription = null,
+                                    tint = primary,
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Text(
+                                    text = stringResource(R.string.onboarding_all_files_status_granted),
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = onPrimaryContainer
+                                )
+                            }
+                        }
+                    } else {
+                        FilledTonalButton(
+                            onClick = {
+                                HapticUtil.performUIHaptic(view)
+                                onRequestAllFilesAccess()
+                            },
+                            shape = RoundedCornerShape(50),
+                            colors = ButtonDefaults.filledTonalButtonColors(
+                                containerColor = primaryContainer,
+                                contentColor = onPrimaryContainer
+                            ),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(44.dp)
+                                .testTag("onboarding_request_all_files_access_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Security,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = stringResource(R.string.onboarding_allow_all_files_access),
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // Section C: Extraction Destination
         Surface(
             modifier = Modifier
                 .fillMaxWidth()
@@ -743,14 +1021,14 @@ private fun OnboardingPermissionsAndDestinationStep(
                     }
                     Column(modifier = Modifier.weight(1f)) {
                         Text(
-                            text = "Extraction Destination",
+                            text = stringResource(R.string.onboarding_destination_title),
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.ExtraBold,
                             color = MaterialTheme.colorScheme.onSurface
                         )
                         Text(
                             text = grantedFolder?.readablePath
-                                ?: "Default destination (or choose a preferred folder such as Downloads)",
+                                ?: stringResource(R.string.onboarding_destination_default_subtitle),
                             style = MaterialTheme.typography.bodySmall,
                             color = if (grantedFolder != null) primary else MaterialTheme.colorScheme.onSurfaceVariant
                         )
@@ -785,9 +1063,9 @@ private fun OnboardingPermissionsAndDestinationStep(
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
                         text = if (grantedFolder != null) {
-                            "Change Destination (${grantedFolder.displayName})"
+                            stringResource(R.string.onboarding_destination_change, grantedFolder.displayName)
                         } else {
-                            "Choose Extraction Folder"
+                            stringResource(R.string.onboarding_destination_choose)
                         },
                         fontWeight = FontWeight.Bold,
                         fontSize = 13.sp
@@ -809,18 +1087,18 @@ private fun OnboardingAppearanceStep(
     val themeOptions = listOf(
         Triple(
             AppThemeMode.LIGHT,
-            "Light",
-            "Warm, balanced surfaces with crisp contrast" to Icons.Default.LightMode
+            stringResource(R.string.onboarding_theme_light_title),
+            stringResource(R.string.onboarding_theme_light_subtitle) to Icons.Default.LightMode
         ),
         Triple(
             AppThemeMode.DARK,
-            "Dark",
-            "Deep slate surfaces designed for low-light comfort" to Icons.Default.DarkMode
+            stringResource(R.string.onboarding_theme_dark_title),
+            stringResource(R.string.onboarding_theme_dark_subtitle) to Icons.Default.DarkMode
         ),
         Triple(
             AppThemeMode.SYSTEM,
-            "System default",
-            "Automatically follows your device appearance setting" to Icons.Default.SettingsBrightness
+            stringResource(R.string.onboarding_theme_system_title),
+            stringResource(R.string.onboarding_theme_system_subtitle) to Icons.Default.SettingsBrightness
         )
     )
 
@@ -839,13 +1117,13 @@ private fun OnboardingAppearanceStep(
 
         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Text(
-                text = "Make it yours",
+                text = stringResource(R.string.onboarding_appearance_title),
                 style = MaterialTheme.typography.headlineMedium,
                 fontWeight = FontWeight.ExtraBold,
                 color = MaterialTheme.colorScheme.onSurface
             )
             Text(
-                text = "Choose how KaiHatch looks. Your selection applies immediately and is saved to Settings.",
+                text = stringResource(R.string.onboarding_appearance_subtitle),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 lineHeight = 20.sp
@@ -939,7 +1217,11 @@ private fun OnboardingAppearanceStep(
                             } else {
                                 Icons.Default.RadioButtonUnchecked
                             },
-                            contentDescription = if (isSelected) "Selected" else "Not selected",
+                            contentDescription = if (isSelected) {
+                                stringResource(R.string.cd_selected)
+                            } else {
+                                stringResource(R.string.cd_not_selected)
+                            },
                             tint = if (isSelected) primary else MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier.size(22.dp)
                         )

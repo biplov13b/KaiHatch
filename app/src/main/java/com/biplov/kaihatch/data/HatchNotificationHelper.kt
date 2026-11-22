@@ -77,8 +77,8 @@ class HatchForegroundService : Service() {
         }
 
         acquireWakeLock()
-        val title = intent?.getStringExtra(EXTRA_TITLE) ?: "KaiHatch Engine Active"
-        val subtitle = intent?.getStringExtra(EXTRA_SUBTITLE) ?: "Processing archive..."
+        val title = intent?.getStringExtra(EXTRA_TITLE) ?: getString(R.string.notif_service_default_title)
+        val subtitle = intent?.getStringExtra(EXTRA_SUBTITLE) ?: getString(R.string.notif_default_subtitle)
         val notification = HatchNotificationHelper.buildProgressNotification(
             context = this,
             title = title,
@@ -180,27 +180,28 @@ object HatchNotificationHelper {
         }
     }
 
-    fun ensureChannels(context: Context) {
-        if (channelsCreated) return
+    fun ensureChannels(context: Context, forceUpdate: Boolean = false) {
+        if (channelsCreated && !forceUpdate) return
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as? NotificationManager
                 ?: return
+            val locContext = LanguageHelper.wrapContext(context)
 
             val progressChannel = NotificationChannel(
                 CHANNEL_LIVE_PROGRESS_ID,
-                "Extraction & Compression Notifications",
+                locContext.getString(R.string.notif_channel_progress_name),
                 NotificationManager.IMPORTANCE_LOW
             ).apply {
-                description = "Extraction and compression progress notifications with Live Updates"
+                description = locContext.getString(R.string.notif_channel_progress_desc)
                 setShowBadge(true)
             }
 
             val completionChannel = NotificationChannel(
                 CHANNEL_COMPLETION_ID,
-                "Completed Archive Tasks",
+                locContext.getString(R.string.notif_channel_completion_name),
                 NotificationManager.IMPORTANCE_DEFAULT
             ).apply {
-                description = "Alerts when archive operations finish and reports total saved storage"
+                description = locContext.getString(R.string.notif_channel_completion_desc)
             }
 
             manager.createNotificationChannel(progressChannel)
@@ -249,11 +250,16 @@ object HatchNotificationHelper {
         return true
     }
 
-    fun formatRemainingLine(remainingBytes: Long, bytesPerSecond: Long): String {
+    fun formatRemainingLine(
+        remainingBytes: Long,
+        bytesPerSecond: Long,
+        context: Context? = null
+    ): String {
         val safeRemaining = remainingBytes.coerceAtLeast(0L)
         val sizeStr = StorageHelper.formatBytes(safeRemaining)
         if (bytesPerSecond <= 0L || safeRemaining <= 0L) {
-            return "Remaining: $sizeStr"
+            return context?.getString(R.string.notif_remaining_size_only, sizeStr)
+                ?: "Remaining: $sizeStr"
         }
         val totalSeconds = (safeRemaining / bytesPerSecond).coerceAtLeast(1L)
         val etaStr = when {
@@ -269,7 +275,8 @@ object HatchNotificationHelper {
             }
             else -> "${totalSeconds}s"
         }
-        return "Remaining: $etaStr • $sizeStr"
+        return context?.getString(R.string.notif_remaining_eta_size, etaStr, sizeStr)
+            ?: "Remaining: $etaStr • $sizeStr"
     }
 
     fun buildProgressNotification(
@@ -296,7 +303,7 @@ object HatchNotificationHelper {
         val clampedFraction = progressFraction.coerceIn(0f, 1f)
         val permille = (clampedFraction * 1000f).toInt()
         val percent = (clampedFraction * 100f).toInt()
-        val shortChipText = if (indeterminate) "Prep" else "$percent%"
+        val shortChipText = if (indeterminate) context.getString(R.string.notif_chip_prep) else "$percent%"
 
         val cleanFileLine = subtitle.trim()
         val cleanRemainingLine = detailBigText.trim()
@@ -368,6 +375,9 @@ object HatchNotificationHelper {
         }
     }
 
+    @Volatile
+    internal var notificationEventObserverForTest: ((event: String, title: String, message: String) -> Unit)? = null
+
     @SuppressLint("MissingPermission")
     fun showCompletionNotification(
         context: Context,
@@ -375,6 +385,7 @@ object HatchNotificationHelper {
         message: String
     ) {
         cancelProgressNotification(context)
+        notificationEventObserverForTest?.invoke("completed", title, message)
         if (!hasNotificationPermission(context)) return
         ensureChannels(context)
 
@@ -405,7 +416,56 @@ object HatchNotificationHelper {
         }
     }
 
+    @SuppressLint("MissingPermission")
+    fun showErrorNotification(
+        context: Context,
+        title: String,
+        message: String
+    ) {
+        cancelProgressNotification(context)
+        cancelCompletionNotification(context)
+        notificationEventObserverForTest?.invoke("error", title, message)
+        if (!hasNotificationPermission(context)) return
+        ensureChannels(context)
+
+        val intent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val pendingIntent = PendingIntent.getActivity(
+            context,
+            2,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val notification = NotificationCompat.Builder(context, CHANNEL_COMPLETION_ID)
+            .setSmallIcon(R.drawable.ic_stat_notify)
+            .setContentTitle(title)
+            .setContentText(message)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(message))
+            .setCategory(NotificationCompat.CATEGORY_ERROR)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setColor(0xFFEF4444.toInt())
+            .setAutoCancel(true)
+            .setContentIntent(pendingIntent)
+            .build()
+
+        try {
+            NotificationManagerCompat.from(context).notify(NOTIFICATION_COMPLETION_ID, notification)
+        } catch (_: Exception) {
+        }
+    }
+
+    fun cancelCompletionNotification(context: Context) {
+        notificationEventObserverForTest?.invoke("cancel_completion", "", "")
+        try {
+            NotificationManagerCompat.from(context).cancel(NOTIFICATION_COMPLETION_ID)
+        } catch (_: Exception) {
+        }
+    }
+
     fun cancelProgressNotification(context: Context) {
+        notificationEventObserverForTest?.invoke("cancel_progress", "", "")
         stopForegroundExecution(context)
         try {
             NotificationManagerCompat.from(context).cancel(NOTIFICATION_PROGRESS_ID)

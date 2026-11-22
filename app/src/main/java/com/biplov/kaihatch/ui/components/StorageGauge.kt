@@ -33,10 +33,14 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.biplov.kaihatch.R
 import com.biplov.kaihatch.data.StorageHelper
+import com.biplov.kaihatch.model.PreExtractionStoragePlan
+import com.biplov.kaihatch.model.StoragePlannerRecommendation
 import com.biplov.kaihatch.ui.theme.JetBrainsMonoFontFamily
 
 private val SavingsEmeraldColor = Color(0xFF2ECC71)
@@ -50,11 +54,12 @@ fun StorageGauge(
     isHatchMode: Boolean,
     deviceFreeBytes: Long = 0L,
     hatchPeakOverrideBytes: Long = 0L,
+    storagePlan: PreExtractionStoragePlan? = null,
     modifier: Modifier = Modifier
 ) {
-    val standardPeakBytes = (archiveBytes + uncompressedBytes).coerceAtLeast(1L)
+    val standardPeakBytes = (storagePlan?.standardTotalPeakBytes ?: (archiveBytes + uncompressedBytes)).coerceAtLeast(1L)
     val hatchPeakBytes = maxOf(
-        hatchPeakOverrideBytes,
+        storagePlan?.hatchTotalPeakBytes ?: hatchPeakOverrideBytes,
         maxOf(archiveBytes, uncompressedBytes)
     ).coerceAtLeast(1L)
     val savedBytes = (standardPeakBytes - hatchPeakBytes).coerceAtLeast(0L)
@@ -74,14 +79,14 @@ fun StorageGauge(
             .coerceIn(baseArchiveTarget, 1f)
     }
 
-    val animatedBaseRatio by animateFloatAsState(
+    val animatedBaseRatioState = animateFloatAsState(
         targetValue = baseArchiveTarget,
-        animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
+        animationSpec = ExpressiveMotion.ProgressSpring,
         label = "hatch_base_ratio"
     )
-    val animatedTotalInPlaceRatio by animateFloatAsState(
+    val animatedTotalInPlaceRatioState = animateFloatAsState(
         targetValue = totalInPlaceTarget,
-        animationSpec = spring(stiffness = Spring.StiffnessMediumLow),
+        animationSpec = ExpressiveMotion.ProgressSpring,
         label = "hatch_total_ratio"
     )
 
@@ -116,7 +121,7 @@ fun StorageGauge(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = "Storage comparison",
+                text = stringResource(R.string.storage_gauge_title),
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.ExtraBold,
                 color = MaterialTheme.colorScheme.onSurface
@@ -132,7 +137,11 @@ fun StorageGauge(
                     .padding(horizontal = 12.dp, vertical = 5.dp)
             ) {
                 Text(
-                    text = if (isLiveExtracting) "Live" else "Estimated",
+                    text = if (isLiveExtracting) {
+                        stringResource(R.string.storage_gauge_badge_live)
+                    } else {
+                        stringResource(R.string.storage_gauge_badge_estimated)
+                    },
                     style = MaterialTheme.typography.labelSmall,
                     fontWeight = FontWeight.SemiBold,
                     color = if (isLiveExtracting) primaryColor else MaterialTheme.colorScheme.onSurfaceVariant
@@ -148,14 +157,14 @@ fun StorageGauge(
             horizontalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             PeakComparisonBox(
-                label = "Standard peak",
+                label = stringResource(R.string.storage_gauge_standard_peak),
                 value = standardPeakFormatted,
                 isHighlighted = !isHatchMode,
                 valueColor = if (!isHatchMode) errorColor else MaterialTheme.colorScheme.onSurface,
                 modifier = Modifier.weight(1f)
             )
             PeakComparisonBox(
-                label = "In-place peak",
+                label = stringResource(R.string.storage_gauge_inplace_peak),
                 value = hatchPeakFormatted,
                 isHighlighted = isHatchMode,
                 valueColor = MaterialTheme.colorScheme.onSurface,
@@ -163,7 +172,14 @@ fun StorageGauge(
             )
         }
 
-        if (deviceFreeBytes > 0L && standardPeakBytes > deviceFreeBytes && hatchPeakBytes <= deviceFreeBytes) {
+        val showHatchFitsNotice = if (storagePlan != null) {
+            storagePlan.isDestinationCapacityReliable &&
+                storagePlan.recommendation == StoragePlannerRecommendation.HATCH_MODE_RECOMMENDED
+        } else {
+            deviceFreeBytes > 0L && standardPeakBytes > deviceFreeBytes && hatchPeakBytes <= deviceFreeBytes
+        }
+
+        if (showHatchFitsNotice) {
             Spacer(modifier = Modifier.height(12.dp))
             Row(
                 modifier = Modifier
@@ -181,7 +197,7 @@ fun StorageGauge(
                     modifier = Modifier.size(16.dp)
                 )
                 Text(
-                    text = "Standard extraction exceeds free space — In-Place fits!",
+                    text = stringResource(R.string.storage_gauge_fits_notice),
                     style = MaterialTheme.typography.labelSmall,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onSurface
@@ -198,7 +214,11 @@ fun StorageGauge(
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text(
-                text = if (isLiveExtracting) "Peak storage saved" else "Estimated peak storage saved",
+                text = if (isLiveExtracting) {
+                    stringResource(R.string.storage_gauge_saved_live)
+                } else {
+                    stringResource(R.string.storage_gauge_saved_estimated)
+                },
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.onSurface
@@ -219,8 +239,8 @@ fun StorageGauge(
         // - Standard selected: shows full red bar across the 2x peak size
         if (isHatchMode) {
             InPlacePeakBar(
-                baseRatio = animatedBaseRatio,
-                totalPeakRatio = animatedTotalInPlaceRatio,
+                baseRatioProvider = { animatedBaseRatioState.value },
+                totalPeakRatioProvider = { animatedTotalInPlaceRatioState.value },
                 solidColor = primaryColor,
                 fadedExtraColor = primaryColor.copy(alpha = 0.35f)
             )
@@ -232,9 +252,9 @@ fun StorageGauge(
 
         Text(
             text = if (isHatchMode) {
-                "$savingsPercent% lower peak storage use than standard extraction."
+                stringResource(R.string.storage_gauge_lower_peak_format, savingsPercent)
             } else {
-                "Standard extraction keeps the source archive intact (requires $standardPeakFormatted peak)."
+                stringResource(R.string.storage_gauge_standard_intact_format, standardPeakFormatted)
             },
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -246,22 +266,75 @@ fun StorageGauge(
 
         // Breakdown Rows: Archive size & Extracted size
         StorageBreakdownRow(
-            label = "Archive size",
+            label = stringResource(R.string.storage_gauge_archive_size),
             value = archiveFormatted
         )
         Spacer(modifier = Modifier.height(8.dp))
         StorageBreakdownRow(
-            label = "Extracted size",
+            label = stringResource(R.string.storage_gauge_extracted_size),
             value = unpackedFormatted
         )
+
+        if (storagePlan != null) {
+            val activeTempWorking = if (isHatchMode && storagePlan.isHatchModeSupported) {
+                storagePlan.hatchTempWorkingBytes
+            } else {
+                storagePlan.standardTempWorkingBytes
+            }
+            val stdAdditionalFormatted = remember(storagePlan.standardPeakAdditionalBytes) {
+                StorageHelper.formatBytes(storagePlan.standardPeakAdditionalBytes)
+            }
+            val hatchAdditionalFormatted = remember(storagePlan.hatchPeakAdditionalBytes, storagePlan.isHatchModeSupported) {
+                if (storagePlan.isHatchModeSupported) {
+                    StorageHelper.formatBytes(storagePlan.hatchPeakAdditionalBytes)
+                } else null
+            }
+            val tempWorkingFormatted = remember(activeTempWorking) { StorageHelper.formatBytes(activeTempWorking) }
+            val reserveFormatted = remember(storagePlan.safetyReserveBytes) { StorageHelper.formatBytes(storagePlan.safetyReserveBytes) }
+            val destFreeFormatted = remember(storagePlan.destinationFreeBytes, storagePlan.isDestinationCapacityReliable) {
+                if (storagePlan.isDestinationCapacityReliable && storagePlan.destinationFreeBytes != null) {
+                    StorageHelper.formatBytes(storagePlan.destinationFreeBytes)
+                } else null
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+            StorageBreakdownRow(
+                label = stringResource(R.string.storage_planner_standard_additional),
+                value = stringResource(R.string.storage_planner_plus_format, stdAdditionalFormatted)
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            StorageBreakdownRow(
+                label = stringResource(R.string.storage_planner_inplace_additional),
+                value = if (hatchAdditionalFormatted != null) {
+                    stringResource(R.string.storage_planner_plus_format, hatchAdditionalFormatted)
+                } else {
+                    stringResource(R.string.storage_planner_unsupported)
+                }
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            StorageBreakdownRow(
+                label = stringResource(R.string.storage_planner_temp_working),
+                value = tempWorkingFormatted
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            StorageBreakdownRow(
+                label = stringResource(R.string.storage_planner_safety_reserve),
+                value = reserveFormatted
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+            StorageBreakdownRow(
+                label = stringResource(R.string.storage_planner_destination_free),
+                value = destFreeFormatted ?: stringResource(R.string.storage_planner_unknown_saf)
+            )
+        }
 
         if (isLiveExtracting) {
             Spacer(modifier = Modifier.height(8.dp))
             val archiveNowFormatted = remember(currentArchiveOnDisk) { StorageHelper.formatBytes(currentArchiveOnDisk) }
             val extractedNowFormatted = remember(extractedOnDisk) { StorageHelper.formatBytes(extractedOnDisk) }
             StorageBreakdownRow(
-                label = "Live disk usage",
-                value = "Archive $archiveNowFormatted • Output $extractedNowFormatted"
+                label = stringResource(R.string.storage_gauge_live_disk_usage),
+                value = stringResource(R.string.storage_gauge_live_disk_meta, archiveNowFormatted, extractedNowFormatted)
             )
         }
     }
@@ -346,8 +419,8 @@ private fun StandardFullRedBar(
 
 @Composable
 private fun InPlacePeakBar(
-    baseRatio: Float,
-    totalPeakRatio: Float,
+    baseRatioProvider: () -> Float,
+    totalPeakRatioProvider: () -> Float,
     solidColor: Color,
     fadedExtraColor: Color
 ) {
@@ -359,6 +432,8 @@ private fun InPlacePeakBar(
             .height(10.dp)
             .clip(CircleShape)
     ) {
+        val baseRatio = baseRatioProvider()
+        val totalPeakRatio = totalPeakRatioProvider()
         val w = size.width
         val h = size.height
         val radius = CornerRadius(h / 2f, h / 2f)

@@ -36,7 +36,9 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.automirrored.filled.OpenInNew
 import androidx.compose.material.icons.filled.Code
+import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.outlined.Email
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -62,6 +64,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
@@ -74,6 +77,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import com.biplov.kaihatch.BuildConfig
 import com.biplov.kaihatch.R
 import com.biplov.kaihatch.ui.components.HapticUtil
 import com.biplov.kaihatch.ui.theme.JetBrainsMonoFontFamily
@@ -97,10 +101,13 @@ internal fun createExternalUrlIntent(url: String): Intent =
         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
     }
 
-internal fun createEmailContactIntent(emailAddress: String): Intent =
+internal fun createEmailContactIntent(
+    emailAddress: String,
+    subject: String = "KaiHatch Feedback"
+): Intent =
     Intent(Intent.ACTION_SENDTO, Uri.parse("mailto:$emailAddress")).apply {
         putExtra(Intent.EXTRA_EMAIL, arrayOf(emailAddress))
-        putExtra(Intent.EXTRA_SUBJECT, "KaiHatch Feedback")
+        putExtra(Intent.EXTRA_SUBJECT, subject)
         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
     }
 
@@ -109,31 +116,32 @@ internal fun openExternalUrl(context: Context, url: String): Boolean {
         context.startActivity(createExternalUrlIntent(url))
         true
     } catch (_: Exception) {
-        Toast.makeText(context, "Unable to open link on this device", Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, context.getString(R.string.about_toast_open_link_error), Toast.LENGTH_SHORT).show()
         false
     }
 }
 
 internal fun openEmailContact(context: Context, emailAddress: String): Boolean {
+    val subject = context.getString(R.string.about_email_subject)
     return try {
-        context.startActivity(createEmailContactIntent(emailAddress))
+        context.startActivity(createEmailContactIntent(emailAddress, subject))
         true
     } catch (_: Exception) {
         try {
             val fallback = Intent(Intent.ACTION_SEND).apply {
                 type = "message/rfc822"
                 putExtra(Intent.EXTRA_EMAIL, arrayOf(emailAddress))
-                putExtra(Intent.EXTRA_SUBJECT, "KaiHatch Feedback")
+                putExtra(Intent.EXTRA_SUBJECT, subject)
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
             context.startActivity(
-                Intent.createChooser(fallback, "Send email").apply {
+                Intent.createChooser(fallback, context.getString(R.string.about_email_chooser_title)).apply {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 }
             )
             true
         } catch (_: Exception) {
-            Toast.makeText(context, "No email app available ($emailAddress)", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, context.getString(R.string.about_toast_no_email_app, emailAddress), Toast.LENGTH_SHORT).show()
             false
         }
     }
@@ -250,6 +258,8 @@ internal val VERIFIED_THIRD_PARTY_NOTICES: List<ThirdPartyLicenseNotice> = listO
 @Composable
 fun SettingsAboutCard(
     isDark: Boolean,
+    isCheckingForUpdates: Boolean = false,
+    onCheckForUpdates: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -304,7 +314,7 @@ fun SettingsAboutCard(
 
         // App Name
         Text(
-            text = "KaiHatch",
+            text = stringResource(R.string.about_app_name),
             style = MaterialTheme.typography.headlineMedium,
             fontWeight = FontWeight.ExtraBold,
             color = onSurface,
@@ -316,7 +326,7 @@ fun SettingsAboutCard(
 
         // Tagline
         Text(
-            text = "Extract smarter. Make room as you go.",
+            text = stringResource(R.string.about_app_tagline),
             style = MaterialTheme.typography.bodyLarge,
             fontWeight = FontWeight.Medium,
             color = onSurfaceVariant,
@@ -328,7 +338,7 @@ fun SettingsAboutCard(
 
         // Developer
         Text(
-            text = "Made by Biplov",
+            text = stringResource(R.string.about_developer_name),
             style = MaterialTheme.typography.titleMedium,
             fontWeight = FontWeight.Bold,
             color = onSurface,
@@ -340,7 +350,7 @@ fun SettingsAboutCard(
 
         // Description
         Text(
-            text = "An independent Android project built around smarter archive handling.",
+            text = stringResource(R.string.about_project_description),
             style = MaterialTheme.typography.bodyMedium,
             color = onSurfaceVariant,
             textAlign = TextAlign.Center,
@@ -360,7 +370,7 @@ fun SettingsAboutCard(
             AboutContactIconButton(
                 backgroundColor = contactTileBg,
                 borderColor = contactTileBorder,
-                contentDescriptionText = "GitHub Repository",
+                contentDescriptionText = stringResource(R.string.about_contact_github_cd),
                 testTag = "about_contact_website_button",
                 onClick = {
                     HapticUtil.performUIHaptic(view)
@@ -377,7 +387,7 @@ fun SettingsAboutCard(
             AboutContactIconButton(
                 backgroundColor = contactTileBg,
                 borderColor = contactTileBorder,
-                contentDescriptionText = "Email",
+                contentDescriptionText = stringResource(R.string.about_contact_email_cd),
                 testTag = "about_contact_email_button",
                 onClick = {
                     HapticUtil.performUIHaptic(view)
@@ -396,7 +406,7 @@ fun SettingsAboutCard(
             AboutContactIconButton(
                 backgroundColor = contactTileBg,
                 borderColor = contactTileBorder,
-                contentDescriptionText = "Telegram",
+                contentDescriptionText = stringResource(R.string.about_contact_telegram_cd),
                 testTag = "about_contact_telegram_button",
                 onClick = {
                     HapticUtil.performUIHaptic(view)
@@ -414,6 +424,7 @@ fun SettingsAboutCard(
         Spacer(modifier = Modifier.height(12.dp))
 
         // Support Development Button (Ko-fi) — text centered across full button width independently of side icons
+        val supportCd = stringResource(R.string.about_support_cd)
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -427,7 +438,7 @@ fun SettingsAboutCard(
                 }
                 .semantics {
                     role = Role.Button
-                    contentDescription = "Support Development: Buy me a coffee on Ko-fi"
+                    contentDescription = supportCd
                 }
                 .padding(horizontal = 16.dp, vertical = 12.dp)
                 .testTag("about_support_development_button")
@@ -448,7 +459,7 @@ fun SettingsAboutCard(
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Text(
-                    text = "Support Development",
+                    text = stringResource(R.string.about_support_title),
                     style = MaterialTheme.typography.titleSmall,
                     fontWeight = FontWeight.Bold,
                     color = onSurface,
@@ -457,7 +468,7 @@ fun SettingsAboutCard(
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
-                    text = "Buy me a coffee on Ko-fi",
+                    text = stringResource(R.string.about_support_subtitle),
                     style = MaterialTheme.typography.bodySmall,
                     color = onSurfaceVariant,
                     textAlign = TextAlign.Center,
@@ -468,7 +479,7 @@ fun SettingsAboutCard(
 
             Icon(
                 imageVector = Icons.AutoMirrored.Filled.OpenInNew,
-                contentDescription = "Opens in browser",
+                contentDescription = stringResource(R.string.about_opens_in_browser_cd),
                 tint = onSurfaceVariant,
                 modifier = Modifier
                     .size(18.dp)
@@ -482,7 +493,82 @@ fun SettingsAboutCard(
             color = outlineVariant.copy(alpha = 0.45f)
         )
 
+        // Check for Updates row directly above Open Licences
+        val checkUpdatesCd = stringResource(R.string.about_check_updates_cd)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 64.dp)
+                .clip(LicensesRowShape)
+                .background(licensesRowBg, LicensesRowShape)
+                .border(1.dp, licensesRowBorder, LicensesRowShape)
+                .clickable(enabled = !isCheckingForUpdates) {
+                    HapticUtil.performUIHaptic(view)
+                    onCheckForUpdates()
+                }
+                .semantics {
+                    role = Role.Button
+                    contentDescription = checkUpdatesCd
+                }
+                .padding(horizontal = 16.dp, vertical = 12.dp)
+                .testTag("about_check_for_updates_row"),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(
+                modifier = Modifier.weight(1f),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                if (isCheckingForUpdates) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(22.dp),
+                        strokeWidth = 2.4.dp,
+                        color = primary
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.Default.SystemUpdate,
+                        contentDescription = null,
+                        tint = primary,
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
+
+                Spacer(modifier = Modifier.width(14.dp))
+
+                Column {
+                    Text(
+                        text = stringResource(R.string.about_check_updates_title),
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = onSurface
+                    )
+                    Text(
+                        text = if (isCheckingForUpdates) {
+                            stringResource(R.string.about_check_updates_checking)
+                        } else {
+                            stringResource(R.string.about_check_updates_subtitle, BuildConfig.VERSION_NAME)
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = onSurfaceVariant
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.width(8.dp))
+
+            Icon(
+                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = null,
+                tint = onSurfaceVariant,
+                modifier = Modifier.size(20.dp)
+            )
+        }
+
+        Spacer(modifier = Modifier.height(10.dp))
+
         // Open-source licenses row at the bottom of the About card
+        val licensesCd = stringResource(R.string.about_licenses_cd)
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -496,7 +582,7 @@ fun SettingsAboutCard(
                 }
                 .semantics {
                     role = Role.Button
-                    contentDescription = "Open-source licenses: View app and third-party licenses"
+                    contentDescription = licensesCd
                 }
                 .padding(horizontal = 16.dp, vertical = 12.dp)
                 .testTag("about_open_source_licenses_row"),
@@ -518,13 +604,13 @@ fun SettingsAboutCard(
 
                 Column {
                     Text(
-                        text = "Open-source licenses",
+                        text = stringResource(R.string.about_licenses_title),
                         style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.Bold,
                         color = onSurface
                     )
                     Text(
-                        text = "View app and third-party licenses",
+                        text = stringResource(R.string.about_licenses_subtitle),
                         style = MaterialTheme.typography.bodySmall,
                         color = onSurfaceVariant
                     )
@@ -570,7 +656,7 @@ internal fun KaiHatchAppLogoBadge(
         )
         Image(
             painter = painterResource(id = R.drawable.ic_launcher_foreground),
-            contentDescription = "KaiHatch App Icon",
+            contentDescription = stringResource(R.string.about_app_icon_cd),
             contentScale = ContentScale.Fit,
             modifier = Modifier
                 .fillMaxSize()
@@ -838,7 +924,7 @@ internal fun OpenSourceLicensesDialog(
                         ) {
                             Icon(
                                 imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                                contentDescription = "Back to Settings",
+                                contentDescription = stringResource(R.string.nav_back_to_settings),
                                 tint = onPrimaryContainer,
                                 modifier = Modifier.size(20.dp)
                             )
@@ -848,13 +934,13 @@ internal fun OpenSourceLicensesDialog(
 
                         Column {
                             Text(
-                                text = "Open-source licenses",
+                                text = stringResource(R.string.about_licenses_title),
                                 style = MaterialTheme.typography.headlineSmall,
                                 fontWeight = FontWeight.ExtraBold,
                                 color = onSurface
                             )
                             Text(
-                                text = "KaiHatch Apache 2.0 license and verified third-party notices",
+                                text = stringResource(R.string.licenses_dialog_subtitle),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = onSurfaceVariant
                             )
@@ -872,26 +958,26 @@ internal fun OpenSourceLicensesDialog(
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         Text(
-                            text = "APPLICATION LICENSE",
+                            text = stringResource(R.string.licenses_app_license_badge),
                             fontSize = 10.sp,
                             fontWeight = FontWeight.ExtraBold,
                             color = primary,
                             fontFamily = JetBrainsMonoFontFamily
                         )
                         Text(
-                            text = "KaiHatch",
+                            text = stringResource(R.string.about_app_name),
                             style = MaterialTheme.typography.titleMedium,
                             fontWeight = FontWeight.ExtraBold,
                             color = onSurface
                         )
                         Text(
-                            text = "Copyright 2026 Biplov Biswas",
+                            text = stringResource(R.string.licenses_app_copyright),
                             style = MaterialTheme.typography.bodyMedium,
                             fontWeight = FontWeight.SemiBold,
                             color = onSurface
                         )
                         Text(
-                            text = "Licensed under the Apache License, Version 2.0. You may obtain a copy of the License at http://www.apache.org/licenses/LICENSE-2.0.",
+                            text = stringResource(R.string.licenses_app_body),
                             style = MaterialTheme.typography.bodySmall,
                             color = onSurfaceVariant
                         )
@@ -909,7 +995,7 @@ internal fun OpenSourceLicensesDialog(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
-                                text = "Apache License, Version 2.0",
+                                text = stringResource(R.string.licenses_apache_button),
                                 style = MaterialTheme.typography.labelMedium,
                                 fontWeight = FontWeight.Bold,
                                 color = onPrimaryContainer
@@ -917,7 +1003,7 @@ internal fun OpenSourceLicensesDialog(
                             Spacer(modifier = Modifier.width(6.dp))
                             Icon(
                                 imageVector = Icons.AutoMirrored.Filled.OpenInNew,
-                                contentDescription = "Open Apache 2.0 License",
+                                contentDescription = stringResource(R.string.licenses_open_apache_cd),
                                 tint = onPrimaryContainer,
                                 modifier = Modifier.size(14.dp)
                             )
@@ -935,20 +1021,20 @@ internal fun OpenSourceLicensesDialog(
                         verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         Text(
-                            text = "CONCEPTUAL INSPIRATION",
+                            text = stringResource(R.string.licenses_inspiration_badge),
                             fontSize = 10.sp,
                             fontWeight = FontWeight.ExtraBold,
                             color = primary,
                             fontFamily = JetBrainsMonoFontFamily
                         )
                         Text(
-                            text = "HatchZip",
+                            text = stringResource(R.string.licenses_inspiration_title),
                             style = MaterialTheme.typography.titleSmall,
                             fontWeight = FontWeight.Bold,
                             color = onSurface
                         )
                         Text(
-                            text = "KaiHatch was inspired by the concept of progressive in-place archive extraction demonstrated by HatchZip (https://github.com/Fabiannez/HatchZip). KaiHatch is an independent Android implementation written in Kotlin and Jetpack Compose. It contains no HatchZip source code and has no official affiliation with or endorsement from the HatchZip project.",
+                            text = stringResource(R.string.licenses_inspiration_body),
                             style = MaterialTheme.typography.bodySmall,
                             color = onSurfaceVariant
                         )
@@ -956,7 +1042,7 @@ internal fun OpenSourceLicensesDialog(
 
                     // 3. Verified Third-Party Software Notices
                     Text(
-                        text = "Third-Party Software Notices",
+                        text = stringResource(R.string.licenses_third_party_header),
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.ExtraBold,
                         color = onSurface,
@@ -1016,17 +1102,16 @@ internal fun OpenSourceLicensesDialog(
                             .background(surfaceContainerLow, LicenseItemCardShape)
                             .border(1.dp, outlineVariant.copy(alpha = 0.4f), LicenseItemCardShape)
                             .padding(14.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         Text(
-                            text = "Zero-Clause BSD (0BSD) — XZ for Java (org.tukaani:xz)",
+                            text = stringResource(R.string.licenses_0bsd_title),
                             style = MaterialTheme.typography.titleSmall,
                             fontWeight = FontWeight.Bold,
                             color = onSurface
                         )
                         Text(
-                            text = "Permission to use, copy, modify, and/or distribute this software for any purpose with or without fee is hereby granted.\n\n" +
-                                "THE SOFTWARE IS PROVIDED \"AS IS\" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.",
+                            text = stringResource(R.string.licenses_0bsd_body),
                             fontSize = 11.sp,
                             color = onSurfaceVariant,
                             fontFamily = JetBrainsMonoFontFamily

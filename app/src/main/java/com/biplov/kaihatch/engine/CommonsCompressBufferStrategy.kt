@@ -1,5 +1,7 @@
 package com.biplov.kaihatch.engine
 
+import android.app.ActivityManager
+import android.content.Context
 import android.system.Os
 import com.biplov.kaihatch.model.ZipEntryInfo
 import org.apache.commons.compress.archivers.ArchiveEntry
@@ -135,17 +137,198 @@ object CommonsCompressBufferStrategy {
         threadLocalHeaderScratch.remove()
     }
 
+    const val MIN_SEVEN_Z_MEMORY_LIMIT_KB = 8 * 1024               // 8 MiB floor
+    const val MAX_SEVEN_Z_MEMORY_LIMIT_KB = 768 * 1024             // 768 MiB ceiling (never unrestricted)
+    const val MIN_BASE_HEAP_RESERVE_BYTES = 32L * 1024L * 1024L    // 32 MiB minimum UI/GC/IO reserve
+    const val MAX_BASE_HEAP_RESERVE_BYTES = 56L * 1024L * 1024L    // 56 MiB cap on base UI/GC/IO reserve
+    const val TRUNCATING_COMPACT_RESERVE_BYTES = 4L * 1024L * 1024L // 4 MiB reserve for 3x1MB swap chunks
+    const val TRUNCATING_LARGE_RESERVE_BYTES = 12L * 1024L * 1024L  // 12 MiB reserve for 3x4MB swap chunks
+
+    /**
+     * Snapshot of JVM/ART heap and optional OS memory metrics for computing a safe 7z decoder budget.
+     */
+    data class MemorySnapshot(
+        val maxHeapBytes: Long,
+        val usedHeapBytes: Long,
+        val systemAvailableRamBytes: Long? = null,
+        val systemThresholdBytes: Long? = null,
+        val isSystemLowMemory: Boolean = false
+    )
+
+    /**
+     * Detailed breakdown of the computed 7z LZMA/LZMA2 decoder memory budget.
+     */
+    data class SevenZMemoryBudget(
+        val maxHeapBytes: Long,
+        val usedHeapBytes: Long,
+        val availableHeapBytes: Long,
+        val systemAvailableRamBytes: Long? = null,
+        val systemThresholdBytes: Long? = null,
+        val isSystemLowMemory: Boolean = false,
+        val reservedHeadroomBytes: Long,
+        val safeDecoderLimitKb: Int
+    ) {
+        val safeDecoderLimitBytes: Long
+            get() = safeDecoderLimitKb.toLong() * 1024L
+    }
+
+    /**
+     * Optional test hook allowing deterministic simulation of different Android heap capacities,
+     * existing app allocations, and OS low-memory conditions in unit/Robolectric tests.
+     */
+    @Volatile
+    var memorySnapshotOverride: (() -> MemorySnapshot)? = null
+
+    /**
+     * Releases thread-local I/O scratch buffers and, if uncollected garbage is occupying a notable
+     * share of the heap, triggers a GC hint before measuring available heap headroom for 7z extraction.
+     */
+    fun prepareHeapForSevenZExtraction(
+        context: Context? = null,
+        includeTruncatingChannelReserve: Boolean = false
+    ): SevenZMemoryBudget {
+        onLowMemoryCleanup()
+        if (memorySnapshotOverride == null) {
+            val runtime = Runtime.getRuntime()
+            val maxMem = runtime.maxMemory().coerceAtLeast(1L)
+            val usedBeforeGc = (runtime.totalMemory() - runtime.freeMemory()).coerceAtLeast(0L)
+            val freeBeforeGc = (maxMem - usedBeforeGc).coerceAtLeast(0L)
+            if (usedBeforeGc > 32L * 1024L * 1024L || freeBeforeGc < 300L * 1024L * 1024L) {
+                runtime.gc()
+            }
+        }
+        return computeSevenZMemoryBudget(
+            context = context,
+            includeTruncatingChannelReserve = includeTruncatingChannelReserve
+        )
+    }
+
+    /**
+     * Captures the current Android ART heap state and optional [ActivityManager.MemoryInfo] metrics.
+     */
+    fun captureMemorySnapshot(context: Context? = null): MemorySnapshot {
+        memorySnapshotOverride?.let { return it.invoke() }
+
+        val runtime = Runtime.getRuntime()
+        val maxHeap = runtime.maxMemory().coerceAtLeast(16L * 1024L * 1024L)
+        val usedHeap = (runtime.totalMemory() - runtime.freeMemory()).coerceIn(0L, maxHeap)
+
+        var sysAvail: Long? = null
+        var sysThreshold: Long? = null
+        var sysLowMem = false
+
+        if (context != null) {
+            try {
+                val am = context.getSystemService(Context.ACTIVITY_SERVICE) as? ActivityManager
+                if (am != null) {
+                    val memInfo = ActivityManager.MemoryInfo()
+                    am.getMemoryInfo(memInfo)
+                    if (memInfo.availMem > 0L) {
+                        sysAvail = memInfo.availMem
+                    }
+                    if (memInfo.threshold > 0L) {
+                        sysThreshold = memInfo.threshold
+                    }
+                    sysLowMem = memInfo.lowMemory
+                }
+            } catch (_: Throwable) {
+            }
+        }
+
+        return MemorySnapshot(
+            maxHeapBytes = maxHeap,
+            usedHeapBytes = usedHeap,
+            systemAvailableRamBytes = sysAvail,
+            systemThresholdBytes = sysThreshold,
+            isSystemLowMemory = sysLowMem
+        )
+    }
+
+    /**
+     * Computes a safe, adaptive 7z LZMA/LZMA2 decoder memory budget based on:
+     * 1. The Android ART Java heap ceiling (`maxHeapBytes`) minus live app allocations (`usedHeapBytes`),
+     *    because `org.tukaani.xz` allocates its dictionary `byte[]` directly on the Java heap (never
+     *    assuming that free system RAM equals available Java heap).
+     * 2. A dedicated safety reserve (`reservedHeadroomBytes`) for UI, ART runtime, GC headroom,
+     *    streaming I/O buffers, and [HatchSevenZTruncatingChannel] swap buffers.
+     * 3. Optional OS physical RAM pressure (`systemAvailableRamBytes` / `isSystemLowMemory`), which
+     *    can only *reduce* the budget when physical RAM is critically low, never increase it beyond
+     *    the available Java heap.
+     */
+    fun computeSevenZMemoryBudget(
+        snapshot: MemorySnapshot,
+        includeTruncatingChannelReserve: Boolean = false
+    ): SevenZMemoryBudget {
+        val maxHeap = snapshot.maxHeapBytes.coerceAtLeast(16L * 1024L * 1024L)
+        val usedHeap = snapshot.usedHeapBytes.coerceIn(0L, maxHeap)
+        val availableHeap = (maxHeap - usedHeap).coerceAtLeast(0L)
+
+        // Never assume free system RAM increases available Java heap; only clamp downward if OS physical
+        // RAM above half the LMK threshold is smaller than remaining Java heap.
+        val effectiveAvailableBytes = if (snapshot.systemAvailableRamBytes != null && snapshot.systemAvailableRamBytes > 0L) {
+            val lmkGuard = (snapshot.systemThresholdBytes ?: 0L).coerceAtLeast(0L) / 2L
+            val usableSystemRam = (snapshot.systemAvailableRamBytes - lmkGuard).coerceAtLeast(0L)
+            minOf(availableHeap, usableSystemRam)
+        } else {
+            availableHeap
+        }
+
+        val baseReserve = (maxHeap / 10L).coerceIn(MIN_BASE_HEAP_RESERVE_BYTES, MAX_BASE_HEAP_RESERVE_BYTES)
+        val truncatingReserve = if (includeTruncatingChannelReserve) {
+            if (maxHeap <= 512L * 1024L * 1024L) {
+                TRUNCATING_COMPACT_RESERVE_BYTES
+            } else {
+                TRUNCATING_LARGE_RESERVE_BYTES
+            }
+        } else {
+            0L
+        }
+        val lowMemPenalty = if (snapshot.isSystemLowMemory) 16L * 1024L * 1024L else 0L
+        val totalReserve = baseReserve + truncatingReserve + lowMemPenalty
+
+        val rawBudgetBytes = (effectiveAvailableBytes - totalReserve).coerceAtLeast(0L)
+        val hardHeapCeilingBytes = (effectiveAvailableBytes - 8L * 1024L * 1024L)
+            .coerceAtLeast(MIN_SEVEN_Z_MEMORY_LIMIT_KB.toLong() * 1024L)
+        val clampedBudgetBytes = minOf(rawBudgetBytes, hardHeapCeilingBytes)
+        val safeKb = (clampedBudgetBytes / 1024L)
+            .toInt()
+            .coerceIn(MIN_SEVEN_Z_MEMORY_LIMIT_KB, MAX_SEVEN_Z_MEMORY_LIMIT_KB)
+
+        return SevenZMemoryBudget(
+            maxHeapBytes = maxHeap,
+            usedHeapBytes = usedHeap,
+            availableHeapBytes = availableHeap,
+            systemAvailableRamBytes = snapshot.systemAvailableRamBytes,
+            systemThresholdBytes = snapshot.systemThresholdBytes,
+            isSystemLowMemory = snapshot.isSystemLowMemory,
+            reservedHeadroomBytes = totalReserve,
+            safeDecoderLimitKb = safeKb
+        )
+    }
+
+    fun computeSevenZMemoryBudget(
+        context: Context? = null,
+        includeTruncatingChannelReserve: Boolean = false
+    ): SevenZMemoryBudget {
+        return computeSevenZMemoryBudget(
+            snapshot = captureMemorySnapshot(context),
+            includeTruncatingChannelReserve = includeTruncatingChannelReserve
+        )
+    }
+
     /**
      * Computes a safe memory limit in KB for Apache Commons Compress `SevenZFileOptions` so large
-     * LZMA/LZMA2 dictionaries in 6GB+ .7z files never crash the app with `OutOfMemoryError`.
+     * LZMA/LZMA2 dictionaries (such as 256 MiB dictionaries requiring ~262,166 KB) can be extracted
+     * on devices with sufficient heap headroom while preventing `OutOfMemoryError` on constrained heaps.
      */
-    fun computeSafeSevenZMemoryLimitKb(): Int {
-        val runtime = Runtime.getRuntime()
-        val maxMem = runtime.maxMemory().coerceAtLeast(64L * 1024L * 1024L)
-        val usedMem = (runtime.totalMemory() - runtime.freeMemory()).coerceAtLeast(0L)
-        val availableBytes = (maxMem - usedMem).coerceAtLeast(32L * 1024L * 1024L)
-        val budgetKb = ((availableBytes * 75L) / 100L / 1024L).toInt()
-        return budgetKb.coerceIn(64 * 1024, 512 * 1024)
+    fun computeSafeSevenZMemoryLimitKb(
+        context: Context? = null,
+        includeTruncatingChannelReserve: Boolean = false
+    ): Int {
+        return computeSevenZMemoryBudget(
+            context = context,
+            includeTruncatingChannelReserve = includeTruncatingChannelReserve
+        ).safeDecoderLimitKb
     }
 
     /**
@@ -153,9 +336,12 @@ object CommonsCompressBufferStrategy {
      * Note: [tryRecoverBrokenArchives] defaults to false to avoid misinterpreting valid multi-gigabyte
      * LZMA2 streams as damaged during decompression.
      */
-    fun buildSevenZOptions(tryRecover: Boolean = false): SevenZFileOptions {
+    fun buildSevenZOptions(
+        tryRecover: Boolean = false,
+        maxMemoryLimitKb: Int = computeSafeSevenZMemoryLimitKb()
+    ): SevenZFileOptions {
         return SevenZFileOptions.builder()
-            .withMaxMemoryLimitInKb(computeSafeSevenZMemoryLimitKb())
+            .withMaxMemoryLimitInKb(maxMemoryLimitKb.coerceIn(MIN_SEVEN_Z_MEMORY_LIMIT_KB, MAX_SEVEN_Z_MEMORY_LIMIT_KB))
             .withTryToRecoverBrokenArchives(tryRecover)
             .build()
     }
@@ -291,16 +477,39 @@ object CommonsCompressBufferStrategy {
             // is decompressed so a corrupt header/coder or unsupported method leaves the file 100% intact.
             pendingHeaderStreamEnd = streamEnd
             payloadLimit = streamEnd.coerceAtLeast(1L)
-            chunkSize = (payloadLimit / 16L).coerceIn(512L * 1024L, 4L * 1024L * 1024L).toInt()
+            val maxHeap = captureMemorySnapshot().maxHeapBytes
+            val maxChunkBytes = if (maxHeap <= 512L * 1024L * 1024L) {
+                1024L * 1024L // 1 MiB chunks on <=512 MiB heaps (3 MiB total swap buffers instead of 12 MiB)
+            } else {
+                4L * 1024L * 1024L
+            }
+            chunkSize = (payloadLimit / 16L).coerceIn(512L * 1024L, maxChunkBytes).toInt()
             totalChunks = ((payloadLimit + chunkSize.toLong() - 1L) / chunkSize.toLong()).toInt().coerceAtLeast(1)
             nextConsumableChunk = 0
             pendingRelocationChunk = -1
 
             relocatedSlot = IntArray(totalChunks) { -1 }
             relocatedLen = IntArray(totalChunks) { 0 }
-            activeChunkBytes = ByteArray(chunkSize)
-            prevChunkBytes = ByteArray(chunkSize)
-            swapScratchBytes = ByteArray(chunkSize)
+            // Lazily allocate activeChunkBytes, prevChunkBytes, and swapScratchBytes when payload
+            // chunks are actually read/swapped so they do not consume heap before LZMA2 decoder creation.
+            activeChunkBytes = ByteArray(0)
+            prevChunkBytes = ByteArray(0)
+            swapScratchBytes = ByteArray(0)
+        }
+
+        private fun ensureActiveChunkBuffersAllocated() {
+            if (activeChunkBytes.size < chunkSize) {
+                activeChunkBytes = ByteArray(chunkSize)
+            }
+            if (prevChunkBytes.size < chunkSize) {
+                prevChunkBytes = ByteArray(chunkSize)
+            }
+        }
+
+        private fun ensureSwapScratchAllocated() {
+            if (swapScratchBytes.size < chunkSize) {
+                swapScratchBytes = ByteArray(chunkSize)
+            }
         }
 
         private fun readPhysicalFully(fileOffset: Long, dst: ByteArray, dstOff: Int, len: Int): Int {
@@ -397,6 +606,7 @@ object CommonsCompressBufferStrategy {
             truncateHeaderTailIfNeeded()
             val tailIdx = totalChunks - 1 - c
             if (c < tailIdx) {
+                ensureSwapScratchAllocated()
                 val tailOffset = tailIdx.toLong() * chunkSize.toLong()
                 val tailLen = expectedChunkLen(tailIdx)
                 val tailRead = readPhysicalFully(tailOffset, swapScratchBytes, 0, tailLen)
@@ -507,6 +717,7 @@ object CommonsCompressBufferStrategy {
         private fun advanceAndLoadChunk(targetChunk: Int) {
             if (targetChunk == activeChunkIndex || targetChunk == prevChunkIndex) return
             if (targetChunk < 0 || targetChunk >= totalChunks) return
+            ensureActiveChunkBuffersAllocated()
 
             // If targetChunk jumped ahead of nextConsumableChunk, advance intermediate chunks safely
             while (nextConsumableChunk <= targetChunk) {
@@ -667,16 +878,24 @@ object CommonsCompressBufferStrategy {
 
     /**
      * Opens a [SevenZFile] over a [HatchSevenZTruncatingChannel] so `.7z` archives in Hatch Mode
-     * perform live 4 MB sub-stream `ftruncate()` throughout extraction.
+     * perform live sub-stream `ftruncate()` throughout extraction.
      */
     fun openTruncatingSevenZFile(
         truncatingChannel: HatchSevenZTruncatingChannel,
         archiveName: String = "Archive.7z",
         password: String? = null,
-        tryRecover: Boolean = false
+        tryRecover: Boolean = false,
+        context: Context? = null,
+        maxMemoryLimitKb: Int = computeSafeSevenZMemoryLimitKb(
+            context = context,
+            includeTruncatingChannelReserve = true
+        )
     ): SevenZFile {
         truncatingChannel.position(0L)
-        val options = buildSevenZOptions(tryRecover = tryRecover)
+        val options = buildSevenZOptions(
+            tryRecover = tryRecover,
+            maxMemoryLimitKb = maxMemoryLimitKb
+        )
         val sevenZ = try {
             if (!password.isNullOrEmpty()) {
                 SevenZFile(truncatingChannel, archiveName, password.toCharArray(), options)
@@ -704,11 +923,19 @@ object CommonsCompressBufferStrategy {
         channel: FileChannel,
         archiveName: String = "Archive.7z",
         password: String? = null,
-        tryRecover: Boolean = false
+        tryRecover: Boolean = false,
+        context: Context? = null,
+        maxMemoryLimitKb: Int = computeSafeSevenZMemoryLimitKb(
+            context = context,
+            includeTruncatingChannelReserve = false
+        )
     ): SevenZFile {
         channel.position(0L)
         val nonClosing = NonClosingSeekableByteChannel(channel)
-        val options = buildSevenZOptions(tryRecover = tryRecover)
+        val options = buildSevenZOptions(
+            tryRecover = tryRecover,
+            maxMemoryLimitKb = maxMemoryLimitKb
+        )
         return try {
             if (!password.isNullOrEmpty()) {
                 SevenZFile(nonClosing, archiveName, password.toCharArray(), options)
@@ -735,7 +962,12 @@ object CommonsCompressBufferStrategy {
         archiveName: String = "Archive.7z",
         password: String? = null,
         closeChannelOnClose: Boolean = false,
-        tryRecover: Boolean = false
+        tryRecover: Boolean = false,
+        context: Context? = null,
+        maxMemoryLimitKb: Int = computeSafeSevenZMemoryLimitKb(
+            context = context,
+            includeTruncatingChannelReserve = false
+        )
     ): SevenZFile {
         val startPos = try {
             channel.position()
@@ -748,7 +980,10 @@ object CommonsCompressBufferStrategy {
             closeDelegateOnClose = closeChannelOnClose
         )
         return try {
-            val options = buildSevenZOptions(tryRecover = tryRecover)
+            val options = buildSevenZOptions(
+                tryRecover = tryRecover,
+                maxMemoryLimitKb = maxMemoryLimitKb
+            )
             if (!password.isNullOrEmpty()) {
                 SevenZFile(bufferedChannel, archiveName, password.toCharArray(), options)
             } else {

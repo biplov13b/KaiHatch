@@ -27,14 +27,16 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.biplov.kaihatch.R
 import com.biplov.kaihatch.data.StorageHelper
 import com.biplov.kaihatch.ui.HatchViewModel
 import com.biplov.kaihatch.ui.components.ExpressiveBentoTile
@@ -47,17 +49,17 @@ import com.biplov.kaihatch.ui.components.groupPositionFor
 import com.biplov.kaihatch.ui.theme.JetBrainsMonoFontFamily
 
 private val SpaceLabSteps = listOf(
-    "64-Bit Central Directory Scan" to "Indexes all file offsets & ZIP64 extra fields without decompressing.",
-    "Crash-Safe .hatchstate Journal" to "Persists the Central Directory table atomically before touching archive bytes.",
-    "Reverse Back-to-Front Extraction" to "Extracts from the highest byte offset toward the beginning of the file.",
-    "CRC-32 Verification Gate" to "Verifies checksum integrity on every extracted file before truncation.",
-    "Zero-Copy Linux ftruncate()" to "Shrinks the archive file descriptor immediately, freeing disk blocks live!"
+    R.string.spacelab_step1_title to R.string.spacelab_step1_desc,
+    R.string.spacelab_step2_title to R.string.spacelab_step2_desc,
+    R.string.spacelab_step3_title to R.string.spacelab_step3_desc,
+    R.string.spacelab_step4_title to R.string.spacelab_step4_desc,
+    R.string.spacelab_step5_title to R.string.spacelab_step5_desc
 )
 
 private val SpaceLabPackages = listOf(
-    Triple(3, "Mini Demo (3 MB)", "Quick test package with text logs & config"),
-    Triple(10, "Game Assets Pack (10 MB)", "Textures, PCM audio & metadata database"),
-    Triple(25, "Heavy Benchmark (25 MB)", "Large payload with high compression variance")
+    Triple(3, R.string.spacelab_pkg_3mb_title, R.string.spacelab_pkg_3mb_desc),
+    Triple(10, R.string.spacelab_pkg_10mb_title, R.string.spacelab_pkg_10mb_desc),
+    Triple(25, R.string.spacelab_pkg_25mb_title, R.string.spacelab_pkg_25mb_desc)
 )
 
 private val StorageCardShape = RoundedCornerShape(28.dp)
@@ -70,9 +72,9 @@ fun SpaceLabScreen(
     topInsetPadding: androidx.compose.ui.unit.Dp = 0.dp,
     modifier: Modifier = Modifier
 ) {
-    val freeSpace by viewModel.deviceFreeSpace.collectAsState()
-    val totalSpace by viewModel.deviceTotalSpace.collectAsState()
-    val isGenerating by viewModel.labGenerating.collectAsState()
+    val freeSpace by viewModel.deviceFreeSpace.collectAsStateWithLifecycle()
+    val totalSpace by viewModel.deviceTotalSpace.collectAsStateWithLifecycle()
+    val isGenerating by viewModel.labGenerating.collectAsStateWithLifecycle()
 
     val primary = MaterialTheme.colorScheme.primary
     val onPrimary = MaterialTheme.colorScheme.onPrimary
@@ -91,9 +93,9 @@ fun SpaceLabScreen(
         Column {
             Spacer(modifier = Modifier.height(4.dp))
             ExpressiveCleanHeader(
-                badgeText = "STORAGE BENCHMARK",
-                title = "Space Lab",
-                subtitle = "Analyze free space and test zero-copy unpacking speed"
+                badgeText = stringResource(R.string.spacelab_header_badge),
+                title = stringResource(R.string.spacelab_header_title),
+                subtitle = stringResource(R.string.spacelab_header_subtitle)
             )
         }
 
@@ -122,12 +124,12 @@ fun SpaceLabScreen(
                         Spacer(modifier = Modifier.width(12.dp))
                         Column {
                             Text(
-                                text = "Device Storage Overview",
+                                text = stringResource(R.string.spacelab_storage_overview_title),
                                 style = MaterialTheme.typography.titleMedium,
                                 color = MaterialTheme.colorScheme.onSurface
                             )
                             Text(
-                                text = "Live available and used disk space",
+                                text = stringResource(R.string.spacelab_storage_overview_subtitle),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
@@ -152,19 +154,19 @@ fun SpaceLabScreen(
                     horizontalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     ExpressiveBentoTile(
-                        label = "Used Space",
+                        label = stringResource(R.string.spacelab_bento_used_space),
                         value = StorageHelper.formatBytes(usedSpace),
                         accentColor = primary,
                         modifier = Modifier.weight(1f)
                     )
                     ExpressiveBentoTile(
-                        label = "Available",
+                        label = stringResource(R.string.spacelab_bento_available),
                         value = StorageHelper.formatBytes(freeSpace),
                         accentColor = primary,
                         modifier = Modifier.weight(1f)
                     )
                     ExpressiveBentoTile(
-                        label = "Total Capacity",
+                        label = stringResource(R.string.spacelab_bento_total_capacity),
                         value = StorageHelper.formatBytes(totalSpace),
                         accentColor = MaterialTheme.colorScheme.onSurface,
                         modifier = Modifier.weight(1f)
@@ -177,12 +179,12 @@ fun SpaceLabScreen(
             verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
                 ExpressiveSectionHeader(
-                    title = "How In-Place Truncation Works",
-                    countText = "5 STEPS",
+                    title = stringResource(R.string.spacelab_how_it_works_title),
+                    countText = stringResource(R.string.spacelab_how_it_works_count),
                     accentColor = primary
                 )
                 Spacer(modifier = Modifier.height(4.dp))
-                SpaceLabSteps.forEachIndexed { idx, (title, desc) ->
+                SpaceLabSteps.forEachIndexed { idx, (titleRes, descRes) ->
                     val pos = groupPositionFor(idx, SpaceLabSteps.size)
                     ExpressiveGroupedCard(
                         position = pos,
@@ -211,13 +213,13 @@ fun SpaceLabScreen(
                             Spacer(modifier = Modifier.width(12.dp))
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = title,
+                                    text = stringResource(titleRes),
                                     fontWeight = FontWeight.ExtraBold,
                                     fontSize = 13.sp,
                                     color = MaterialTheme.colorScheme.onSurface
                                 )
                                 Text(
-                                    text = desc,
+                                    text = stringResource(descRes),
                                     fontSize = 11.sp,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -238,8 +240,8 @@ fun SpaceLabScreen(
             verticalArrangement = Arrangement.spacedBy(4.dp)
         ) {
                 ExpressiveSectionHeader(
-                    title = "Generate Benchmark Archives",
-                    countText = "LIVE DEMO",
+                    title = stringResource(R.string.spacelab_benchmark_title),
+                    countText = stringResource(R.string.spacelab_benchmark_badge),
                     accentColor = primary,
                     trailingContent = {
                         if (isGenerating) {
@@ -252,7 +254,7 @@ fun SpaceLabScreen(
                     }
                 )
                 Spacer(modifier = Modifier.height(4.dp))
-                SpaceLabPackages.forEachIndexed { idx, (sizeMb, label, desc) ->
+                SpaceLabPackages.forEachIndexed { idx, (sizeMb, labelRes, descRes) ->
                     val pos = groupPositionFor(idx, SpaceLabPackages.size)
                     ExpressiveGroupedCard(
                         position = pos,
@@ -267,13 +269,13 @@ fun SpaceLabScreen(
                         ) {
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = label,
+                                    text = stringResource(labelRes),
                                     fontWeight = FontWeight.ExtraBold,
                                     fontSize = 14.sp,
                                     color = MaterialTheme.colorScheme.onSurface
                                 )
                                 Text(
-                                    text = desc,
+                                    text = stringResource(descRes),
                                     fontSize = 11.sp,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
@@ -295,7 +297,11 @@ fun SpaceLabScreen(
                             ) {
                                 Icon(imageVector = Icons.Default.Bolt, contentDescription = null, modifier = Modifier.size(15.dp))
                                 Spacer(modifier = Modifier.width(4.dp))
-                                Text(text = "Create", fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
+                                Text(
+                                    text = stringResource(R.string.spacelab_create_button),
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.ExtraBold
+                                )
                             }
                         }
                     }

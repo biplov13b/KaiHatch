@@ -3,27 +3,38 @@ package com.biplov.kaihatch.data
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.os.Environment
+import android.os.ParcelFileDescriptor
 import android.os.StatFs
 import android.provider.DocumentsContract
+import android.provider.MediaStore
 import android.provider.OpenableColumns
+import android.provider.Settings
+import android.system.Os
+import android.system.OsConstants
 import android.webkit.MimeTypeMap
 import android.widget.Toast
 import androidx.compose.runtime.Immutable
 import androidx.core.content.FileProvider
+import com.biplov.kaihatch.R
 import com.biplov.kaihatch.engine.ZipCryptoCipher
 import com.biplov.kaihatch.engine.ZipParser
 import com.biplov.kaihatch.model.ZipEntryInfo
 import org.apache.commons.compress.archivers.sevenz.SevenZFile
 import java.io.File
+import java.io.FileDescriptor
 import java.io.FileInputStream
 import java.io.FileOutputStream
+import java.io.IOException
 import java.io.InputStream
+import java.io.OutputStream
 import java.io.RandomAccessFile
 import java.net.URLDecoder
 import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
 import java.util.Locale
+import java.util.zip.CRC32
 import java.util.zip.Inflater
 import java.util.zip.InflaterInputStream
 import java.util.zip.ZipFile
@@ -58,7 +69,12 @@ data class ExtractedFileEntry(
     val mimeType: String,
     val localFile: File? = null,
     val safUri: Uri? = null,
-    val isSaf: Boolean = false
+    val isSaf: Boolean = false,
+    val isDirectory: Boolean = false,
+    val relativePath: String = name,
+    val parentId: String = "",
+    val safTreeUri: Uri? = null,
+    val safDocId: String? = null
 )
 
 @Immutable
@@ -70,7 +86,11 @@ data class ExtractedFolderEntry(
     val safUri: Uri? = null,
     val totalSizeBytes: Long = 0L,
     val children: List<ExtractedFileEntry> = emptyList(),
-    val locationDescription: String = ""
+    val locationDescription: String = "",
+    val totalFileCount: Int = children.size,
+    val safTreeUri: Uri? = null,
+    val safDocId: String? = null,
+    val canonicalPath: String? = null
 )
 
 data class TargetOutput(
@@ -78,7 +98,42 @@ data class TargetOutput(
     val channel: FileChannel,
     val localFile: File? = null,
     val documentUri: Uri? = null,
-    val close: () -> Unit
+    val close: () -> Unit,
+    val sync: () -> Boolean = { StorageHelper.syncFileDescriptorStrict(null, channel) },
+    val closeStrict: () -> Unit = close
+)
+
+data class TransactableDescriptorProbe(
+    val isSupported: Boolean,
+    val sizeBytes: Long,
+    val reason: String? = null
+)
+
+data class SafPartialOutputVerification(
+    val isValid: Boolean,
+    val documentUri: Uri? = null,
+    val actualSize: Long = -1L,
+    val actualPrefixCrc32: Long = -1L,
+    val failureReason: String? = null
+)
+
+sealed class SafRecoveryOutputOpenResult {
+    data class Opened(
+        val targetOutput: TargetOutput,
+        val documentUri: Uri,
+        val verifiedPrefixBytes: Long,
+        val trimmedTrailingBytes: Long
+    ) : SafRecoveryOutputOpenResult()
+
+    data class Failed(val reason: String) : SafRecoveryOutputOpenResult()
+}
+
+@Immutable
+data class DestinationCapacityInfo(
+    val availableBytes: Long?,
+    val totalBytes: Long?,
+    val isReliable: Boolean,
+    val isDirectPosix: Boolean
 )
 
 object StorageHelper {
@@ -104,6 +159,160 @@ object StorageHelper {
         }
     }
 
+    /**
+     * Queries the available and total bytes of the selected extraction destination without
+     * fabricating a fallback capacity when a SAF provider's underlying volume capacity cannot
+     * be reliably determined.
+     */
+    fun queryDestinationCapacity(
+        context: Context?,
+        targetDir: File?,
+        targetTreeUri: Uri?
+    ): DestinationCapacityInfo {
+        val isDirectPosix = if (targetDir != null || targetTreeUri != null) {
+            isDirectPosixDestination(context, targetDir, targetTreeUri)
+        } else {
+            true
+        }
+
+        fun statLocalFile(candidate: File?): Pair<Long, Long>? {
+            if (candidate == null) return null
+            return try {
+                val existing = generateSequence(candidate) { it.parentFile }
+                    .firstOrNull { it.exists() } ?: return null
+                val stat = StatFs(existing.absolutePath)
+                val avail = stat.availableBlocksLong * stat.blockSizeLong
+                val total = stat.blockCountLong * stat.blockSizeLong
+                if (avail >= 0L && total > 0L) avail to total else null
+            } catch (_: Throwable) {
+                null
+            }
+        }
+
+        if (targetTreeUri != null) {
+            if (targetTreeUri.scheme.equals("file", ignoreCase = true)) {
+                val fileTarget = targetDir ?: targetTreeUri.path?.let { File(it) }
+                val stats = statLocalFile(fileTarget)
+                return if (stats != null) {
+                    DestinationCapacityInfo(
+                        availableBytes = stats.first,
+                        totalBytes = stats.second,
+                        isReliable = true,
+                        isDirectPosix = true
+                    )
+                } else {
+                    DestinationCapacityInfo(
+                        availableBytes = null,
+                        totalBytes = null,
+                        isReliable = false,
+                        isDirectPosix = false
+                    )
+                }
+            }
+
+            // 1. If targetDir is already verified as a direct external POSIX directory, stat it directly.
+            if (isDirectPosix && targetDir != null) {
+                val stats = statLocalFile(targetDir)
+                if (stats != null) {
+                    return DestinationCapacityInfo(
+                        availableBytes = stats.first,
+                        totalBytes = stats.second,
+                        isReliable = true,
+                        isDirectPosix = true
+                    )
+                }
+            }
+
+            // 2. Try querying the SAF tree document descriptor via Os.fstatvfs.
+            if (context != null) {
+                try {
+                    val treeDocId = DocumentsContract.getTreeDocumentId(targetTreeUri)
+                    val docUri = DocumentsContract.buildDocumentUriUsingTree(targetTreeUri, treeDocId)
+                    context.contentResolver.openFileDescriptor(docUri, "r")?.use { pfd ->
+                        val vfs = android.system.Os.fstatvfs(pfd.fileDescriptor)
+                        val frsize = if (vfs.f_frsize > 0L) vfs.f_frsize else vfs.f_bsize
+                        val avail = vfs.f_bavail * frsize
+                        val total = vfs.f_blocks * frsize
+                        if (avail >= 0L && total > 0L) {
+                            return DestinationCapacityInfo(
+                                availableBytes = avail,
+                                totalBytes = total,
+                                isReliable = true,
+                                isDirectPosix = isDirectPosix
+                            )
+                        }
+                    }
+                } catch (_: Throwable) {
+                }
+            }
+
+            // 3. Only if the SAF URI belongs to the standard Android external storage provider
+            //    for primary:/home:, resolve the external storage mount root for StatFs.
+            val authority = targetTreeUri.authority.orEmpty()
+            if (authority.equals("com.android.externalstorage.documents", ignoreCase = true)) {
+                val rootDir = tryResolveDirectTreeRootDir(targetTreeUri)
+                val stats = statLocalFile(rootDir)
+                if (stats != null) {
+                    val canWriteDirect = rootDir != null && (targetDir != null && isDirectPosix)
+                    return DestinationCapacityInfo(
+                        availableBytes = stats.first,
+                        totalBytes = stats.second,
+                        isReliable = true,
+                        isDirectPosix = canWriteDirect
+                    )
+                }
+            }
+
+            // Never guarantee or fabricate free space when SAF capacity cannot be determined.
+            return DestinationCapacityInfo(
+                availableBytes = null,
+                totalBytes = null,
+                isReliable = false,
+                isDirectPosix = false
+            )
+        }
+
+        if (targetDir != null) {
+            val stats = statLocalFile(targetDir)
+            if (stats != null) {
+                return DestinationCapacityInfo(
+                    availableBytes = stats.first,
+                    totalBytes = stats.second,
+                    isReliable = true,
+                    isDirectPosix = true
+                )
+            }
+        }
+
+        return try {
+            val stat = StatFs(Environment.getDataDirectory().path)
+            val avail = stat.availableBlocksLong * stat.blockSizeLong
+            val total = stat.blockCountLong * stat.blockSizeLong
+            if (avail >= 0L && total > 0L) {
+                DestinationCapacityInfo(
+                    availableBytes = avail,
+                    totalBytes = total,
+                    isReliable = true,
+                    isDirectPosix = true
+                )
+            } else {
+                DestinationCapacityInfo(
+                    availableBytes = null,
+                    totalBytes = null,
+                    isReliable = false,
+                    isDirectPosix = isDirectPosix
+                )
+            }
+        } catch (_: Throwable) {
+            DestinationCapacityInfo(
+                availableBytes = null,
+                totalBytes = null,
+                isReliable = false,
+                isDirectPosix = isDirectPosix
+            )
+        }
+    }
+
     fun getArchivesDir(context: Context): File {
         val dir = File(context.filesDir, "archives")
         if (!dir.exists()) dir.mkdirs()
@@ -122,10 +331,302 @@ object StorageHelper {
         return dir
     }
 
+    private const val TAG_STORAGE = "KaiHatchStorage"
+
+    private val activeCompressionPaths: MutableSet<String> =
+        java.util.concurrent.ConcurrentHashMap.newKeySet()
+
+    private fun normalizeStoragePath(file: File): String {
+        return try {
+            file.canonicalPath
+        } catch (_: Throwable) {
+            file.absolutePath
+        }
+    }
+
     fun getTempDir(context: Context): File {
         val dir = File(context.cacheDir, "compress_temp")
         if (!dir.exists()) dir.mkdirs()
         return dir
+    }
+
+    fun getCompressStagingDir(context: Context): File {
+        val dir = File(context.cacheDir, "compress_staging")
+        if (!dir.exists()) dir.mkdirs()
+        return dir
+    }
+
+    fun registerActiveCompressionFile(file: File?) {
+        if (file == null) return
+        val norm = normalizeStoragePath(file)
+        activeCompressionPaths.add(norm)
+        runCatching {
+            android.util.Log.d(
+                TAG_STORAGE,
+                "Registered active compression file: path=$norm exists=${file.exists()} size=${if (file.exists() && file.isFile) file.length() else 0L}"
+            )
+        }
+    }
+
+    fun unregisterActiveCompressionFile(file: File?) {
+        if (file == null) return
+        val norm = normalizeStoragePath(file)
+        activeCompressionPaths.remove(norm)
+    }
+
+    fun isCompressionFileActive(file: File?): Boolean {
+        if (file == null) return false
+        val norm = normalizeStoragePath(file)
+        if (activeCompressionPaths.contains(norm)) return true
+        val prefix = if (norm.endsWith(File.separator)) norm else "$norm${File.separator}"
+        return activeCompressionPaths.any { active ->
+            val activePrefix = if (active.endsWith(File.separator)) active else "$active${File.separator}"
+            active.startsWith(prefix) || norm.startsWith(activePrefix)
+        }
+    }
+
+    private fun isDescendantOfDir(file: File, dir: File): Boolean {
+        val normFile = normalizeStoragePath(file)
+        val normDir = normalizeStoragePath(dir)
+        if (normFile == normDir) return false
+        val prefix = if (normDir.endsWith(File.separator)) normDir else "$normDir${File.separator}"
+        return normFile.startsWith(prefix)
+    }
+
+    fun isCompressionTempFile(context: Context, file: File?): Boolean {
+        if (file == null) return false
+        val tempRoot = File(context.cacheDir, "compress_temp")
+        return isDescendantOfDir(file, tempRoot)
+    }
+
+    fun isCompressionStagingFile(context: Context, file: File?): Boolean {
+        if (file == null) return false
+        val stagingRoot = File(context.cacheDir, "compress_staging")
+        return isDescendantOfDir(file, stagingRoot)
+    }
+
+    fun isDisposableCompressionFile(context: Context, file: File?): Boolean {
+        return isCompressionTempFile(context, file) || isCompressionStagingFile(context, file)
+    }
+
+    fun isProtectedExtractionOrRecoveryFile(context: Context, file: File?): Boolean {
+        if (file == null) return false
+        val name = file.name
+        if (name.endsWith(".hatchstate.json") ||
+            name.endsWith(".ckpt.bin") ||
+            name.endsWith(".index.bin") ||
+            name.endsWith(".tailswap.guard") ||
+            name.startsWith(".kaihatch_")
+        ) {
+            return true
+        }
+        val journalsDir = File(context.filesDir, "hatch_journals")
+        val extractedDir = File(context.filesDir, "extracted")
+        val archivesDir = File(context.filesDir, "archives")
+        val sampleArchivesDir = File(context.filesDir, "sample_archives")
+        val normFile = normalizeStoragePath(file)
+        return listOf(journalsDir, extractedDir, archivesDir, sampleArchivesDir).any { protectedDir ->
+            val normProtected = normalizeStoragePath(protectedDir)
+            val prefix = if (normProtected.endsWith(File.separator)) normProtected else "$normProtected${File.separator}"
+            normFile == normProtected || normFile.startsWith(prefix)
+        }
+    }
+
+    /**
+     * Safely deletes a disposable compression temporary or staged file/directory owned by KaiHatch.
+     * Never deletes active files, extraction recovery journals, legacy `files/extracted` contents,
+     * or user files outside `cacheDir/compress_temp` and `cacheDir/compress_staging`.
+     */
+    fun cleanupCompressionFile(
+        context: Context,
+        file: File?,
+        reason: String,
+        forceUnregister: Boolean = false
+    ): Boolean {
+        if (file == null) return false
+        if (forceUnregister) {
+            unregisterActiveCompressionFile(file)
+        }
+        return try {
+            if (isProtectedExtractionOrRecoveryFile(context, file)) {
+                runCatching {
+                    android.util.Log.d(
+                        TAG_STORAGE,
+                        "Retained protected extraction/recovery file (cleanup skipped): path=${file.absolutePath} reason=$reason"
+                    )
+                }
+                return false
+            }
+            if (!isDisposableCompressionFile(context, file)) {
+                return false
+            }
+            if (isCompressionFileActive(file)) {
+                runCatching {
+                    android.util.Log.d(
+                        TAG_STORAGE,
+                        "Retained active compression file (in use): path=${file.absolutePath} reason=$reason"
+                    )
+                }
+                return false
+            }
+            if (!file.exists()) {
+                return true
+            }
+            val sizeBytes = runCatching {
+                if (file.isDirectory) getDirectorySize(file) else file.length()
+            }.getOrDefault(0L)
+            val deleted = if (file.isDirectory) file.deleteRecursively() else file.delete()
+            if (deleted || !file.exists()) {
+                runCatching {
+                    android.util.Log.d(
+                        TAG_STORAGE,
+                        "Deleted compression temp file: path=${file.absolutePath} bytes=$sizeBytes reason=$reason"
+                    )
+                }
+                true
+            } else {
+                runCatching {
+                    android.util.Log.w(
+                        TAG_STORAGE,
+                        "Failed to delete compression temp file: path=${file.absolutePath} bytes=$sizeBytes reason=$reason"
+                    )
+                }
+                false
+            }
+        } catch (t: Throwable) {
+            runCatching {
+                android.util.Log.w(
+                    TAG_STORAGE,
+                    "Exception during compression temp cleanup: path=${file.absolutePath} reason=$reason error=${t.message}"
+                )
+            }
+            false
+        }
+    }
+
+    fun cleanupStagedCompressionItems(
+        context: Context,
+        items: Collection<File>,
+        reason: String
+    ): Int {
+        var cleanedCount = 0
+        for (item in items) {
+            unregisterActiveCompressionFile(item)
+            if (isCompressionStagingFile(context, item)) {
+                if (cleanupCompressionFile(context, item, reason, forceUnregister = true)) {
+                    cleanedCount++
+                }
+            }
+        }
+        return cleanedCount
+    }
+
+    /**
+     * Scans `cacheDir/compress_temp` and `cacheDir/compress_staging` when no compression job is running
+     * and removes abandoned temporary files from prior interrupted/crashed sessions.
+     * Strictly scoped to compression temp/staging directories; never touches `files/extracted`,
+     * `files/hatch_journals`, `files/archives`, or any active/queued items.
+     */
+    fun cleanupAbandonedCompressionTempFiles(
+        context: Context,
+        isCompressionRunning: Boolean = false,
+        queuedItems: Collection<File> = emptyList(),
+        minAgeMs: Long = 0L,
+        queuedItemsProvider: () -> Collection<File> = { queuedItems }
+    ): Int {
+        if (isCompressionRunning) {
+            runCatching {
+                android.util.Log.d(
+                    TAG_STORAGE,
+                    "Skipping abandoned compression temp sweep: compression is currently running"
+                )
+            }
+            return 0
+        }
+        var reclaimedFiles = 0
+        var reclaimedBytes = 0L
+        val nowMs = System.currentTimeMillis()
+
+        fun isQueuedOrDescendant(candidate: File): Boolean {
+            val dynamicQueued = queuedItemsProvider()
+            val queuedCanonical = HashSet<String>(queuedItems.size + dynamicQueued.size)
+            queuedItems.forEach { queuedCanonical.add(normalizeStoragePath(it)) }
+            dynamicQueued.forEach { queuedCanonical.add(normalizeStoragePath(it)) }
+            if (queuedCanonical.isEmpty()) return false
+            val norm = normalizeStoragePath(candidate)
+            if (queuedCanonical.contains(norm)) return true
+            val prefix = if (norm.endsWith(File.separator)) norm else "$norm${File.separator}"
+            return queuedCanonical.any { q ->
+                val qPrefix = if (q.endsWith(File.separator)) q else "$q${File.separator}"
+                q.startsWith(prefix) || norm.startsWith(qPrefix)
+            }
+        }
+
+        fun isRecentlyModified(candidate: File): Boolean {
+            if (minAgeMs <= 0L) return false
+            val cutoff = nowMs - minAgeMs
+            var latestMod = candidate.lastModified()
+            if (latestMod > cutoff) return true
+            if (candidate.isDirectory) {
+                val hasRecentDescendant = runCatching {
+                    candidate.walkTopDown().any { it.lastModified() > cutoff }
+                }.getOrDefault(true)
+                if (hasRecentDescendant) return true
+            }
+            return false
+        }
+
+        val tempRoot = File(context.cacheDir, "compress_temp")
+        if (tempRoot.exists() && tempRoot.isDirectory) {
+            tempRoot.listFiles()?.forEach { child ->
+                if (!isCompressionFileActive(child) && !isQueuedOrDescendant(child) && !isRecentlyModified(child)) {
+                    val bytes = runCatching {
+                        if (child.isDirectory) getDirectorySize(child) else child.length()
+                    }.getOrDefault(0L)
+                    runCatching {
+                        android.util.Log.d(
+                            TAG_STORAGE,
+                            "Detected abandoned compression temp archive: path=${child.absolutePath} bytes=$bytes"
+                        )
+                    }
+                    if (cleanupCompressionFile(context, child, "abandoned_compress_temp_sweep")) {
+                        reclaimedFiles++
+                        reclaimedBytes += bytes
+                    }
+                }
+            }
+        }
+
+        val stagingRoot = File(context.cacheDir, "compress_staging")
+        if (stagingRoot.exists() && stagingRoot.isDirectory) {
+            stagingRoot.listFiles()?.forEach { child ->
+                if (!isCompressionFileActive(child) && !isQueuedOrDescendant(child) && !isRecentlyModified(child)) {
+                    val bytes = runCatching {
+                        if (child.isDirectory) getDirectorySize(child) else child.length()
+                    }.getOrDefault(0L)
+                    runCatching {
+                        android.util.Log.d(
+                            TAG_STORAGE,
+                            "Detected abandoned compression staging item: path=${child.absolutePath} bytes=$bytes"
+                        )
+                    }
+                    if (cleanupCompressionFile(context, child, "abandoned_compress_staging_sweep")) {
+                        reclaimedFiles++
+                        reclaimedBytes += bytes
+                    }
+                }
+            }
+        }
+
+        if (reclaimedFiles > 0) {
+            runCatching {
+                android.util.Log.d(
+                    TAG_STORAGE,
+                    "Abandoned compression sweep complete: reclaimedFiles=$reclaimedFiles reclaimedBytes=$reclaimedBytes"
+                )
+            }
+        }
+        return reclaimedFiles
     }
 
     fun formatBytes(bytes: Long): String {
@@ -238,15 +739,25 @@ object StorageHelper {
     }
 
     /**
-     * Returns the currently granted persistent folder (if any), checking both SharedPreferences
-     * and Android's persisted DocumentTree URI permissions.
+     * Fast non-blocking lookup that reads only the cached SharedPreferences URI without
+     * invoking a synchronous Binder IPC call to ContentResolver.persistedUriPermissions.
      */
-    fun getGrantedFolderInfo(context: Context): GrantedFolderInfo? {
+    fun getGrantedFolderInfoFast(context: Context): GrantedFolderInfo? {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         val savedUriStr = prefs.getString(KEY_SELECTED_FOLDER_URI, null)
         if (!savedUriStr.isNullOrEmpty()) {
             return parseGrantedFolderUri(Uri.parse(savedUriStr), true)
         }
+        return null
+    }
+
+    /**
+     * Returns the currently granted persistent folder (if any), checking both SharedPreferences
+     * and Android's persisted DocumentTree URI permissions.
+     */
+    fun getGrantedFolderInfo(context: Context): GrantedFolderInfo? {
+        getGrantedFolderInfoFast(context)?.let { return it }
+        val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
         try {
             val persistedTrees = context.contentResolver.persistedUriPermissions.filter { isTreeUriSafe(it.uri) }
@@ -463,12 +974,12 @@ object StorageHelper {
         try {
             val targetUri = uri ?: file?.let {
                 if (!it.exists()) {
-                    Toast.makeText(context, "File not found", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(context, context.getString(R.string.toast_file_not_found), Toast.LENGTH_SHORT).show()
                     return
                 }
                 FileProvider.getUriForFile(context, "${context.packageName}.fileprovider", it)
             } ?: run {
-                Toast.makeText(context, "File not found", Toast.LENGTH_SHORT).show()
+                Toast.makeText(context, context.getString(R.string.toast_file_not_found), Toast.LENGTH_SHORT).show()
                 return
             }
 
@@ -479,12 +990,16 @@ object StorageHelper {
                 putExtra(Intent.EXTRA_STREAM, targetUri)
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
             }
-            val chooser = Intent.createChooser(shareIntent, "Share $fileName").apply {
+            val chooser = Intent.createChooser(shareIntent, context.getString(R.string.sheet_viewer_share_chooser, fileName)).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
             context.startActivity(chooser)
         } catch (e: Exception) {
-            Toast.makeText(context, "Unable to share file: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
+            Toast.makeText(
+                context,
+                context.getString(R.string.toast_unable_to_share, e.localizedMessage ?: ""),
+                Toast.LENGTH_SHORT
+            ).show()
         }
     }
 
@@ -571,7 +1086,7 @@ object StorageHelper {
             if (targetUri == null) {
                 Toast.makeText(
                     context,
-                    "Unable to open $fileName: file is missing or inaccessible.",
+                    context.getString(R.string.toast_unable_to_open_missing, fileName),
                     Toast.LENGTH_SHORT
                 ).show()
                 return false
@@ -603,13 +1118,16 @@ object StorageHelper {
             if (!canResolvePrimary && pm.resolveActivity(effectiveIntent, 0) == null) {
                 Toast.makeText(
                     context,
-                    "No compatible app installed to open $fileName.",
+                    context.getString(R.string.toast_no_app_to_open, fileName),
                     Toast.LENGTH_SHORT
                 ).show()
                 return false
             }
 
-            val chooser = Intent.createChooser(effectiveIntent, "Open $fileName").apply {
+            val chooser = Intent.createChooser(
+                effectiveIntent,
+                context.getString(R.string.chooser_open_file, fileName)
+            ).apply {
                 addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                 if (context !is android.app.Activity) {
                     addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -621,14 +1139,18 @@ object StorageHelper {
         } catch (_: android.content.ActivityNotFoundException) {
             Toast.makeText(
                 context,
-                "No compatible app installed to open $fileName.",
+                context.getString(R.string.toast_no_app_to_open, fileName),
                 Toast.LENGTH_SHORT
             ).show()
             false
         } catch (e: Exception) {
             Toast.makeText(
                 context,
-                "Unable to open $fileName: ${e.localizedMessage ?: "unknown error"}",
+                context.getString(
+                    R.string.toast_unable_to_open_error,
+                    fileName,
+                    e.localizedMessage ?: "unknown error"
+                ),
                 Toast.LENGTH_SHORT
             ).show()
             false
@@ -1220,6 +1742,504 @@ object StorageHelper {
         safDirUriCache.clear()
     }
 
+    @Volatile
+    internal var allFilesAccessOverrideForTest: Boolean? = null
+
+    @Volatile
+    internal var forceFsyncFailureForTest: ((FileDescriptor?) -> Boolean)? = null
+
+    @Volatile
+    internal var externalStorageDirOverrideForTest: File? = null
+
+    fun hasAllFilesAccess(): Boolean {
+        allFilesAccessOverrideForTest?.let { return it }
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return false
+        return try {
+            Environment.isExternalStorageManager()
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    fun isAllFilesAccessSupportedOnDevice(): Boolean = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
+
+    fun createManageAllFilesAccessIntent(context: Context): Intent {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION).apply {
+                data = Uri.fromParts("package", context.packageName, null)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+        } else {
+            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                data = Uri.fromParts("package", context.packageName, null)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+        }
+    }
+
+    /**
+     * Strictly flushes kernel page cache & metadata via `FileDescriptor.sync()` (or `FileChannel.force(true)`).
+     * Never silently swallows errors — returns `false` if `fsync` fails or is unsupported.
+     */
+    fun syncFileDescriptorStrict(fd: FileDescriptor?, channel: FileChannel?): Boolean {
+        forceFsyncFailureForTest?.let { hook ->
+            if (hook(fd)) return false
+        }
+        if (fd != null) {
+            if (!fd.valid()) return false
+            return try {
+                fd.sync()
+                true
+            } catch (_: Throwable) {
+                false
+            }
+        }
+        if (channel != null) {
+            return try {
+                channel.force(true)
+                true
+            } catch (_: Throwable) {
+                false
+            }
+        }
+        return false
+    }
+
+    /**
+     * Probes whether [fd] / [channel] is a real seekable regular file descriptor supporting
+     * positional read, non-destructive `pwrite`, `ftruncate`, and strict `fsync`.
+     * Fails closed for pipes, sockets, read-only descriptors, and non-syncable/proxy providers.
+     */
+    fun probeTransactableFileDescriptor(
+        fd: FileDescriptor,
+        channel: FileChannel?,
+        requireWriteAndTruncate: Boolean = true
+    ): TransactableDescriptorProbe {
+        if (!fd.valid()) {
+            return TransactableDescriptorProbe(
+                isSupported = false,
+                sizeBytes = -1L,
+                reason = "File descriptor is invalid or already closed."
+            )
+        }
+
+        var statSize = -1L
+        var realPosixOsAvailable = false
+        try {
+            val st = Os.fstat(fd)
+            if (st != null && st.st_mode != 0) {
+                realPosixOsAvailable = true
+                if (!OsConstants.S_ISREG(st.st_mode)) {
+                    return TransactableDescriptorProbe(
+                        isSupported = false,
+                        sizeBytes = -1L,
+                        reason = "File descriptor is not a regular seekable file (pipe, stream, or virtual provider)."
+                    )
+                }
+                statSize = st.st_size
+            }
+        } catch (e: android.system.ErrnoException) {
+            val msg = e.localizedMessage ?: e.javaClass.simpleName
+            return TransactableDescriptorProbe(
+                isSupported = false,
+                sizeBytes = -1L,
+                reason = "fstat failed on file descriptor ($msg)."
+            )
+        } catch (_: LinkageError) {
+            // Host JVM unit tests without Bionic Os linkage fall through to channel checks.
+        } catch (_: UnsupportedOperationException) {
+            // Host JVM unit tests without shadowed Os fall through to channel checks.
+        }
+
+        val resolvedSize = try {
+            channel?.size()?.takeIf { it >= 0L } ?: statSize
+        } catch (t: Throwable) {
+            if (!realPosixOsAvailable) {
+                return TransactableDescriptorProbe(
+                    isSupported = false,
+                    sizeBytes = -1L,
+                    reason = "File descriptor is not a regular seekable file (${t.localizedMessage ?: t.javaClass.simpleName})."
+                )
+            }
+            statSize
+        }
+        if (resolvedSize < 0L) {
+            return TransactableDescriptorProbe(
+                isSupported = false,
+                sizeBytes = -1L,
+                reason = "File descriptor does not expose a valid seekable size."
+            )
+        }
+
+        // Verify seekability even when resolvedSize == 0 (catches pipes/FIFOs when Bionic Os.fstat is unshadowed)
+        if (!realPosixOsAvailable && channel != null) {
+            val seekOk = try {
+                val cur = channel.position()
+                channel.position(cur)
+                true
+            } catch (_: Throwable) {
+                false
+            }
+            if (!seekOk) {
+                return TransactableDescriptorProbe(
+                    isSupported = false,
+                    sizeBytes = -1L,
+                    reason = "File descriptor is not seekable (pipe, stream, or virtual provider)."
+                )
+            }
+        }
+
+        val probeByte = ByteArray(1)
+        if (resolvedSize > 0L) {
+            val readOk = try {
+                val readViaChannel = if (channel != null) {
+                    val bb = ByteBuffer.wrap(probeByte)
+                    channel.read(bb, 0L) == 1
+                } else false
+                if (readViaChannel) {
+                    true
+                } else if (realPosixOsAvailable) {
+                    Os.pread(fd, probeByte, 0, 1, 0L) == 1
+                } else {
+                    false
+                }
+            } catch (_: LinkageError) {
+                false
+            } catch (t: Throwable) {
+                return TransactableDescriptorProbe(
+                    isSupported = false,
+                    sizeBytes = resolvedSize,
+                    reason = "File descriptor does not support positional seek/read (${t.localizedMessage ?: t.javaClass.simpleName})."
+                )
+            }
+            if (!readOk) {
+                return TransactableDescriptorProbe(
+                    isSupported = false,
+                    sizeBytes = resolvedSize,
+                    reason = "File descriptor failed positional read probe at offset 0."
+                )
+            }
+        }
+
+        if (requireWriteAndTruncate) {
+            // 1. Non-destructive pwrite probe at offset 0 when file is non-empty
+            if (resolvedSize > 0L) {
+                var wrote = false
+                if (channel != null) {
+                    try {
+                        val bb = ByteBuffer.wrap(probeByte)
+                        if (channel.write(bb, 0L) == 1) {
+                            wrote = true
+                        }
+                    } catch (_: Throwable) {
+                    }
+                }
+                if (!wrote) {
+                    try {
+                        val outCh = FileOutputStream(fd).channel
+                        val bb = ByteBuffer.wrap(probeByte)
+                        if (outCh.write(bb, 0L) == 1) {
+                            wrote = true
+                        }
+                    } catch (_: Throwable) {
+                    }
+                }
+                if (!wrote && realPosixOsAvailable) {
+                    try {
+                        if (Os.pwrite(fd, probeByte, 0, 1, 0L) == 1) {
+                            wrote = true
+                        }
+                    } catch (_: Throwable) {
+                    }
+                }
+                if (!wrote) {
+                    return TransactableDescriptorProbe(
+                        isSupported = false,
+                        sizeBytes = resolvedSize,
+                        reason = "File descriptor does not support positional in-place write (pwrite)."
+                    )
+                }
+            }
+
+            // 2. Non-destructive ftruncate probe at current size
+            var truncated = false
+            if (channel != null) {
+                try {
+                    channel.truncate(resolvedSize)
+                    truncated = true
+                } catch (_: Throwable) {
+                }
+            }
+            if (!truncated) {
+                try {
+                    FileOutputStream(fd).channel.truncate(resolvedSize)
+                    truncated = true
+                } catch (_: Throwable) {
+                }
+            }
+            if (!truncated && realPosixOsAvailable) {
+                try {
+                    Os.ftruncate(fd, resolvedSize)
+                    truncated = true
+                } catch (_: Throwable) {
+                }
+            }
+            if (!truncated) {
+                return TransactableDescriptorProbe(
+                    isSupported = false,
+                    sizeBytes = resolvedSize,
+                    reason = "File descriptor does not support in-place truncation (ftruncate)."
+                )
+            }
+
+            // 3. Strict fsync probe — never allow transactional mutations without durable fsync
+            if (!syncFileDescriptorStrict(fd, channel)) {
+                return TransactableDescriptorProbe(
+                    isSupported = false,
+                    sizeBytes = resolvedSize,
+                    reason = "File descriptor does not support durable fsync."
+                )
+            }
+        }
+
+        return TransactableDescriptorProbe(
+            isSupported = true,
+            sizeBytes = resolvedSize,
+            reason = null
+        )
+    }
+
+    private fun resolveExternalStorageRoot(): File =
+        externalStorageDirOverrideForTest ?: Environment.getExternalStorageDirectory()
+
+    private fun resolveDocumentsPublicRoot(): File =
+        externalStorageDirOverrideForTest?.let { File(it, Environment.DIRECTORY_DOCUMENTS) }
+            ?: Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS)
+
+    private fun resolveDownloadsPublicRoot(): File =
+        externalStorageDirOverrideForTest?.let { File(it, Environment.DIRECTORY_DOWNLOADS) }
+            ?: Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+
+    /**
+     * Resolves a source archive [Uri] to a direct-POSIX [File] ONLY when:
+     * 1. Direct filesystem access is permitted (`file://`, or `hasAllFilesAccess()` on Android 11+, or API < 30),
+     * 2. The URI belongs to a known local storage provider (`externalstorage`, `downloads`, `media`),
+     * 3. The resolved file exists, is a regular file, is readable & writable, and passes `fsync`, AND
+     * 4. File identity is strictly proven against the opened URI descriptor (`st_size` match AND
+     *    either exact kernel `st_dev`+`st_ino` match or exact head/middle/tail 8 KB byte-for-byte + mtime match).
+     *
+     * Never assumes a URI maps safely to a local file without identity and permission checks.
+     */
+    fun tryResolveVerifiedDirectSourceFile(context: Context, uri: Uri): File? {
+        return try {
+            if (uri.scheme.equals("file", ignoreCase = true)) {
+                val path = uri.path?.takeIf { it.isNotBlank() } ?: return null
+                val candidate = File(path)
+                if (!candidate.exists() || !candidate.isFile || !candidate.canRead() || !candidate.canWrite()) {
+                    return null
+                }
+                return if (verifyDirectFileWritableAndSyncable(candidate)) candidate else null
+            }
+
+            if (!uri.scheme.equals("content", ignoreCase = true)) return null
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && !hasAllFilesAccess()) {
+                return null
+            }
+
+            val candidate = resolveCandidateLocalFileFromContentUri(context, uri) ?: return null
+            if (!candidate.exists() || !candidate.isFile || !candidate.canRead() || !candidate.canWrite()) {
+                return null
+            }
+            if (candidate.length() <= 0L) return null
+
+            // Prove identity against the actual ContentResolver file descriptor before trusting candidate!
+            val identityMatches = context.contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
+                verifyDescriptorMatchesLocalFile(pfd.fileDescriptor, candidate)
+            } ?: false
+
+            if (!identityMatches) return null
+            if (!verifyDirectFileWritableAndSyncable(candidate)) return null
+
+            candidate
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    private fun resolveCandidateLocalFileFromContentUri(context: Context, uri: Uri): File? {
+        val authority = uri.authority?.lowercase(Locale.US) ?: return null
+        return when (authority) {
+            "com.android.externalstorage.documents" -> {
+                val docId = runCatching { DocumentsContract.getDocumentId(uri) }.getOrNull() ?: return null
+                if (!docId.contains(':')) return null
+                val vol = docId.substringBefore(':').lowercase(Locale.US)
+                val rel = docId.substringAfter(':').trimStart('/')
+                if (rel.isEmpty()) return null
+                when (vol) {
+                    "primary" -> File(resolveExternalStorageRoot(), rel)
+                    "home" -> File(resolveDocumentsPublicRoot(), rel)
+                    else -> null
+                }
+            }
+            "com.android.providers.downloads.documents" -> {
+                val docId = runCatching { DocumentsContract.getDocumentId(uri) }.getOrNull() ?: return null
+                when {
+                    docId.startsWith("raw:", ignoreCase = true) -> {
+                        val rawPath = docId.substring(4)
+                        if (rawPath.isNotBlank()) File(rawPath) else null
+                    }
+                    docId.startsWith("msf:", ignoreCase = true) -> {
+                        val numericId = docId.substring(4).toLongOrNull() ?: return null
+                        queryMediaStoreDataPath(context, MediaStore.Files.getContentUri("external"), numericId)
+                            ?: if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                                queryMediaStoreDataPath(context, MediaStore.Downloads.EXTERNAL_CONTENT_URI, numericId)
+                            } else null
+                    }
+                    docId.toLongOrNull() != null -> {
+                        val numericId = docId.toLong()
+                        queryMediaStoreDataPath(context, MediaStore.Files.getContentUri("external"), numericId)
+                            ?: if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                                queryMediaStoreDataPath(context, MediaStore.Downloads.EXTERNAL_CONTENT_URI, numericId)
+                            } else null
+                    }
+                    else -> null
+                }
+            }
+            "media" -> {
+                queryDirectDataColumn(context, uri)
+            }
+            else -> null
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun queryMediaStoreDataPath(context: Context, contentUri: Uri, id: Long): File? {
+        return try {
+            val projection = arrayOf(MediaStore.MediaColumns.DATA)
+            context.contentResolver.query(
+                contentUri,
+                projection,
+                "${MediaStore.MediaColumns._ID} = ?",
+                arrayOf(id.toString()),
+                null
+            )?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val col = cursor.getColumnIndex(MediaStore.MediaColumns.DATA)
+                    if (col >= 0 && !cursor.isNull(col)) {
+                        val p = cursor.getString(col)
+                        if (!p.isNullOrBlank()) return File(p)
+                    }
+                }
+                null
+            }
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun queryDirectDataColumn(context: Context, uri: Uri): File? {
+        return try {
+            val projection = arrayOf(MediaStore.MediaColumns.DATA)
+            context.contentResolver.query(uri, projection, null, null, null)?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val col = cursor.getColumnIndex(MediaStore.MediaColumns.DATA)
+                    if (col >= 0 && !cursor.isNull(col)) {
+                        val p = cursor.getString(col)
+                        if (!p.isNullOrBlank()) return File(p)
+                    }
+                }
+                null
+            }
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    private fun verifyDirectFileWritableAndSyncable(file: File): Boolean {
+        return try {
+            RandomAccessFile(file, "rw").use { raf ->
+                val probe = probeTransactableFileDescriptor(raf.fd, raf.channel, requireWriteAndTruncate = true)
+                probe.isSupported
+            }
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    private fun verifyDescriptorMatchesLocalFile(fd: FileDescriptor, candidate: File): Boolean {
+        if (!fd.valid() || !candidate.exists() || !candidate.isFile) return false
+        val fileLen = candidate.length()
+        if (fileLen <= 0L) return false
+
+        var kernelStatChecked = false
+        try {
+            val fdStat = Os.fstat(fd)
+            val fileStat = Os.stat(candidate.absolutePath)
+            if (fdStat != null && fileStat != null && fdStat.st_mode != 0 && fileStat.st_mode != 0) {
+                if (!OsConstants.S_ISREG(fdStat.st_mode) || !OsConstants.S_ISREG(fileStat.st_mode)) {
+                    return false
+                }
+                if (fdStat.st_size != fileStat.st_size || fdStat.st_size != fileLen) {
+                    return false
+                }
+                kernelStatChecked = true
+                if (fdStat.st_dev == fileStat.st_dev && fdStat.st_ino == fileStat.st_ino) {
+                    return true
+                }
+                // Different st_dev/st_ino can happen across Android FUSE upper/lower mounts for the same file;
+                // require close mtime AND exact sampled byte-for-byte content match before trusting.
+                if (kotlin.math.abs(fdStat.st_mtime - fileStat.st_mtime) > 2L) {
+                    return false
+                }
+            }
+        } catch (_: android.system.ErrnoException) {
+            return false
+        } catch (_: LinkageError) {
+            // Host JVM Robolectric fallback: verify via exact channel size + sampled byte-for-byte match.
+        } catch (_: UnsupportedOperationException) {
+            // Host JVM Robolectric fallback: verify via exact channel size + sampled byte-for-byte match.
+        }
+
+        return try {
+            FileInputStream(fd).use { fis ->
+                val ch = fis.channel
+                val chSize = ch.size()
+                if (chSize != fileLen) return false
+                val sampleSize = minOf(8192L, fileLen).toInt()
+                val offsets = linkedSetOf(
+                    0L,
+                    ((fileLen / 2L) - (sampleSize / 2L)).coerceAtLeast(0L),
+                    (fileLen - sampleSize).coerceAtLeast(0L)
+                )
+                val fdBuf = ByteArray(sampleSize)
+                val fileBuf = ByteArray(sampleSize)
+                RandomAccessFile(candidate, "r").use { raf ->
+                    for (off in offsets) {
+                        val toRead = minOf(sampleSize.toLong(), fileLen - off).toInt()
+                        if (toRead <= 0) continue
+                        val bb = ByteBuffer.wrap(fdBuf, 0, toRead)
+                        var readPos = off
+                        while (bb.hasRemaining()) {
+                            val r = ch.read(bb, readPos)
+                            if (r <= 0) return false
+                            readPos += r
+                        }
+                        raf.seek(off)
+                        raf.readFully(fileBuf, 0, toRead)
+                        for (i in 0 until toRead) {
+                            if (fdBuf[i] != fileBuf[i]) return false
+                        }
+                    }
+                }
+                // Extra sanity guard if kernel stat wasn't available: confirm canonical paths don't escape
+                kernelStatChecked || candidate.canonicalFile.isFile
+            }
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
     fun tryResolveDirectTreeRootDir(treeUri: Uri): File? {
         return try {
             if (treeUri.scheme == "file") {
@@ -1228,21 +2248,37 @@ object StorageHelper {
                 if (!dir.exists()) dir.mkdirs()
                 return if (dir.exists() && dir.isDirectory) dir else null
             }
+            val authority = treeUri.authority?.lowercase(Locale.US).orEmpty()
             val treeDocId = try {
                 DocumentsContract.getTreeDocumentId(treeUri)
             } catch (_: Throwable) {
                 val raw = URLDecoder.decode(treeUri.toString(), "UTF-8")
                 raw.substringAfter("/tree/", "").substringBefore("/document/")
             }
-            if (!treeDocId.contains(':')) return null
-            val vol = treeDocId.substringBefore(':').lowercase(Locale.US)
-            val rel = treeDocId.substringAfter(':').trim('/')
-            val rootDir = when (vol) {
-                "primary" -> Environment.getExternalStorageDirectory()
-                "home" -> Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS)
+            val parentDir: File = when (authority) {
+                "com.android.externalstorage.documents" -> {
+                    if (!treeDocId.contains(':')) return null
+                    val vol = treeDocId.substringBefore(':').lowercase(Locale.US)
+                    val rel = treeDocId.substringAfter(':').trim('/')
+                    val rootDir = when (vol) {
+                        "primary" -> resolveExternalStorageRoot()
+                        "home" -> resolveDocumentsPublicRoot()
+                        else -> return null
+                    }
+                    if (rel.isEmpty()) rootDir else File(rootDir, rel)
+                }
+                "com.android.providers.downloads.documents" -> {
+                    when {
+                        treeDocId.equals("downloads", ignoreCase = true) -> resolveDownloadsPublicRoot()
+                        treeDocId.startsWith("raw:", ignoreCase = true) -> {
+                            val rawPath = treeDocId.substring(4)
+                            if (rawPath.isBlank()) return null else File(rawPath)
+                        }
+                        else -> return null
+                    }
+                }
                 else -> return null
             }
-            val parentDir = if (rel.isEmpty()) rootDir else File(rootDir, rel)
             if (!parentDir.exists()) {
                 parentDir.mkdirs()
             }
@@ -1253,9 +2289,9 @@ object StorageHelper {
     }
 
     /**
-     * Resolves a direct POSIX [File] path for a subfolder inside a `primary:` DocumentTree URI
+     * Resolves a direct POSIX [File] path for a subfolder inside a verified local DocumentTree URI
      * (e.g., `/storage/emulated/0/Download/<subfolderName>`) if the kernel FUSE mount permits
-     * direct POSIX file creation by this app inside the app-created subfolder.
+     * direct POSIX file creation and durable `fsync` by this app inside the subfolder.
      * Bypasses per-file SAF ContentResolver Binder IPC for 10x–20x higher extraction throughput.
      */
     fun tryResolveDirectWritableSubfolder(treeUri: Uri, subfolderName: String): File? {
@@ -1267,17 +2303,84 @@ object StorageHelper {
             }
             if (!candidateDir.exists() || !candidateDir.isDirectory) return null
 
-            // Verify POSIX write access inside the subfolder with a non-media probe file
+            // Verify POSIX write + durable fsync + delete access inside the subfolder with a non-media probe file
             val probe = File(candidateDir, ".kaihatch_io_probe.bin")
+            var syncOk = false
             FileOutputStream(probe).use { fos ->
                 fos.write(1)
                 fos.flush()
+                syncOk = syncFileDescriptorStrict(fos.fd, fos.channel)
             }
             probe.delete()
-            candidateDir
+            if (syncOk) candidateDir else null
         } catch (_: Throwable) {
             null
         }
+    }
+
+    fun isAppInternalFallbackDir(context: Context?, dir: File?): Boolean {
+        if (context == null || dir == null) return false
+        val absPath = dir.absolutePath
+        if (absPath.startsWith(context.cacheDir.absolutePath) ||
+            absPath.startsWith(context.filesDir.absolutePath)
+        ) {
+            return true
+        }
+        return try {
+            val canonDir = dir.canonicalPath
+            val canonCache = context.cacheDir.canonicalPath
+            val canonFiles = context.filesDir.canonicalPath
+            canonDir.startsWith(canonCache) || canonDir.startsWith(canonFiles)
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
+    /**
+     * Returns true ONLY when the user-selected destination supports direct POSIX file I/O:
+     * - Either no SAF tree URI was selected (`targetTreeUri == null`), meaning the caller explicitly
+     *   requested local POSIX extraction to `targetDir`, OR
+     * - A SAF tree URI was selected AND `targetDir` was verified as a direct external POSIX directory
+     *   (never an internal fallback directory inside `context.filesDir` or `context.cacheDir`).
+     */
+    fun isDirectPosixDestination(
+        context: Context?,
+        targetDir: File?,
+        targetTreeUri: Uri?
+    ): Boolean {
+        if (targetDir == null) return false
+        if (targetTreeUri == null || targetTreeUri.scheme == "file") return true
+        if (context == null) return false
+        return !isAppInternalFallbackDir(context, targetDir)
+    }
+
+    fun ensureSafDirectoryPath(
+        context: Context,
+        treeUri: Uri,
+        targetFolderDocUri: Uri?,
+        fallbackSubfolderName: String?,
+        relativeDirPath: String
+    ): Uri? {
+        val baseFolderUri = targetFolderDocUri
+            ?: (!fallbackSubfolderName.isNullOrEmpty()).let { hasName ->
+                if (hasName) getOrCreateDocumentSubfolder(context, treeUri, fallbackSubfolderName!!) else null
+            }
+            ?: try {
+                DocumentsContract.buildDocumentUriUsingTree(
+                    treeUri,
+                    DocumentsContract.getTreeDocumentId(treeUri)
+                )
+            } catch (_: Throwable) {
+                null
+            } ?: return null
+
+        val segments = relativeDirPath.replace('\\', '/').trim('/').split('/').filter { it.isNotEmpty() }
+        var currentParent = baseFolderUri
+        for (seg in segments) {
+            val next = getOrCreateDocumentChildDir(context, treeUri, currentParent, seg) ?: return null
+            currentParent = next
+        }
+        return currentParent
     }
 
     fun openTargetOutput(
@@ -1286,15 +2389,13 @@ object StorageHelper {
         targetTreeUri: Uri?,
         targetFolderDocUri: Uri?,
         relativePath: String,
-        expectedBytes: Long
+        expectedBytes: Long,
+        randomAccess: Boolean = false
     ): TargetOutput {
-        val isAppInternalFallback = context != null && targetDir != null && (
-            targetDir.absolutePath.startsWith(context.cacheDir.absolutePath) ||
-                targetDir.absolutePath.startsWith(context.filesDir.absolutePath)
-            )
+        val canUseDirectPosix = isDirectPosixDestination(context, targetDir, targetTreeUri)
         // Fast path: if targetDir is a direct-writable POSIX directory (or local extraction without SAF),
-        // try direct POSIX FileOutputStream first to avoid per-file SAF Binder IPC overhead.
-        if (targetDir != null && (targetTreeUri == null || !isAppInternalFallback)) {
+        // try direct POSIX output first to avoid per-file SAF Binder IPC overhead.
+        if (canUseDirectPosix && targetDir != null) {
             try {
                 val destFile = resolveSafeDestFile(targetDir, relativePath)
                 val parent = destFile.parentFile
@@ -1303,28 +2404,145 @@ object StorageHelper {
                         if (!parent.exists()) parent.mkdirs()
                     }
                 }
-                val fos = FileOutputStream(destFile)
-                return TargetOutput(
-                    outputStream = fos,
-                    channel = fos.channel,
-                    localFile = destFile,
-                    documentUri = null,
-                    close = {
-                        try { fos.flush() } catch (_: Exception) {}
-                        try { fos.fd.sync() } catch (_: Throwable) {}
-                        try { fos.close() } catch (_: Exception) {}
+                return if (randomAccess) {
+                    val raf = java.io.RandomAccessFile(destFile, "rw")
+                    val fos = FileOutputStream(raf.fd)
+                    val closed = java.util.concurrent.atomic.AtomicBoolean(false)
+                    val closeStrictFn: () -> Unit = {
+                        if (closed.compareAndSet(false, true)) {
+                            var firstErr: Throwable? = null
+                            try { fos.flush() } catch (t: Throwable) { firstErr = t }
+                            try { fos.close() } catch (t: Throwable) { if (firstErr == null) firstErr = t }
+                            try { raf.close() } catch (t: Throwable) { if (firstErr == null) firstErr = t }
+                            if (firstErr != null) {
+                                if (firstErr is java.io.IOException) throw firstErr
+                                throw java.io.IOException("Failed to close output file '${destFile.name}': ${firstErr.message}", firstErr)
+                            }
+                        }
                     }
-                )
-            } catch (_: Throwable) {
-                // Fall through to SAF ContentResolver if FUSE blocks direct POSIX creation for this file
+                    TargetOutput(
+                        outputStream = fos,
+                        channel = raf.channel,
+                        localFile = destFile,
+                        documentUri = null,
+                        close = {
+                            if (closed.compareAndSet(false, true)) {
+                                try { fos.flush() } catch (_: Exception) {}
+                                try { raf.fd.sync() } catch (_: Throwable) {}
+                                try { fos.close() } catch (_: Exception) {}
+                                try { raf.close() } catch (_: Exception) {}
+                            }
+                        },
+                        sync = { syncFileDescriptorStrict(raf.fd, raf.channel) },
+                        closeStrict = closeStrictFn
+                    )
+                } else {
+                    val fos = FileOutputStream(destFile)
+                    val closed = java.util.concurrent.atomic.AtomicBoolean(false)
+                    val closeStrictFn: () -> Unit = {
+                        if (closed.compareAndSet(false, true)) {
+                            var firstErr: Throwable? = null
+                            try { fos.flush() } catch (t: Throwable) { firstErr = t }
+                            try { fos.close() } catch (t: Throwable) { if (firstErr == null) firstErr = t }
+                            if (firstErr != null) {
+                                if (firstErr is java.io.IOException) throw firstErr
+                                throw java.io.IOException("Failed to close output file '${destFile.name}': ${firstErr.message}", firstErr)
+                            }
+                        }
+                    }
+                    TargetOutput(
+                        outputStream = fos,
+                        channel = fos.channel,
+                        localFile = destFile,
+                        documentUri = null,
+                        close = {
+                            if (closed.compareAndSet(false, true)) {
+                                try { fos.flush() } catch (_: Exception) {}
+                                try { fos.fd.sync() } catch (_: Throwable) {}
+                                try { fos.close() } catch (_: Exception) {}
+                            }
+                        },
+                        sync = { syncFileDescriptorStrict(fos.fd, fos.channel) },
+                        closeStrict = closeStrictFn
+                    )
+                }
+            } catch (t: Throwable) {
+                // If no SAF destination was selected, rethrow immediately instead of redirecting to /tmp
+                if (targetTreeUri == null) {
+                    if (t is java.io.IOException) throw t
+                    throw java.io.IOException("Failed to open local output file for '$relativePath': ${t.message}", t)
+                }
+                // Otherwise fall through to SAF ContentResolver when FUSE blocks direct POSIX creation
             }
         }
 
-        if (context != null && targetTreeUri != null && targetFolderDocUri != null) {
-            val safOut = openSafTargetOutput(context, targetTreeUri, targetFolderDocUri, relativePath, expectedBytes)
-            if (safOut != null) return safOut
+        if (targetTreeUri != null) {
+            if (context == null) {
+                throw java.io.IOException(
+                    "Cannot write '$relativePath' to selected SAF destination ($targetTreeUri) without Android Context"
+                )
+            }
+            val subfolderName = targetDir?.name?.takeIf { it.isNotEmpty() }
+            var effectiveFolderDocUri = targetFolderDocUri
+                ?: if (subfolderName != null) {
+                    getOrCreateDocumentSubfolder(context, targetTreeUri, subfolderName)
+                } else {
+                    try {
+                        DocumentsContract.buildDocumentUriUsingTree(
+                            targetTreeUri,
+                            DocumentsContract.getTreeDocumentId(targetTreeUri)
+                        )
+                    } catch (_: Throwable) {
+                        null
+                    }
+                }
+
+            if (effectiveFolderDocUri != null) {
+                val safOut = openSafTargetOutput(
+                    context = context,
+                    treeUri = targetTreeUri,
+                    targetFolderDocUri = effectiveFolderDocUri,
+                    relativePath = relativePath,
+                    expectedBytes = expectedBytes,
+                    randomAccess = randomAccess
+                )
+                if (safOut != null) return safOut
+            }
+
+            // Retry once after clearing cached SAF directory URIs in case a cached folder URI became stale
+            clearSafDirCache()
+            effectiveFolderDocUri = if (subfolderName != null) {
+                getOrCreateDocumentSubfolder(context, targetTreeUri, subfolderName)
+            } else {
+                targetFolderDocUri ?: try {
+                    DocumentsContract.buildDocumentUriUsingTree(
+                        targetTreeUri,
+                        DocumentsContract.getTreeDocumentId(targetTreeUri)
+                    )
+                } catch (_: Throwable) {
+                    null
+                }
+            }
+            if (effectiveFolderDocUri != null) {
+                val retrySafOut = openSafTargetOutput(
+                    context = context,
+                    treeUri = targetTreeUri,
+                    targetFolderDocUri = effectiveFolderDocUri,
+                    relativePath = relativePath,
+                    expectedBytes = expectedBytes,
+                    randomAccess = randomAccess
+                )
+                if (retrySafOut != null) return retrySafOut
+            }
+
+            // NEVER silently fall back to writing into context.filesDir/extracted when a SAF destination was selected!
+            throw java.io.IOException(
+                "Failed to create or open output file '$relativePath' in selected SAF destination folder ($targetTreeUri)"
+            )
         }
-        val safeDir = targetDir ?: File("/tmp")
+
+        val safeDir = targetDir
+            ?: throw java.io.IOException("No extraction destination directory specified for '$relativePath'")
         val destFile = resolveSafeDestFile(safeDir, relativePath)
         val parent = destFile.parentFile
         if (parent != null && !parent.exists()) {
@@ -1332,18 +2550,68 @@ object StorageHelper {
                 if (!parent.exists()) parent.mkdirs()
             }
         }
-        val fos = FileOutputStream(destFile)
-        return TargetOutput(
-            outputStream = fos,
-            channel = fos.channel,
-            localFile = destFile,
-            documentUri = null,
-            close = {
-                try { fos.flush() } catch (_: Exception) {}
-                try { fos.fd.sync() } catch (_: Throwable) {}
-                try { fos.close() } catch (_: Exception) {}
+        return if (randomAccess) {
+            val raf = java.io.RandomAccessFile(destFile, "rw")
+            val fos = FileOutputStream(raf.fd)
+            val closed = java.util.concurrent.atomic.AtomicBoolean(false)
+            val closeStrictFn: () -> Unit = {
+                if (closed.compareAndSet(false, true)) {
+                    var firstErr: Throwable? = null
+                    try { fos.flush() } catch (t: Throwable) { firstErr = t }
+                    try { fos.close() } catch (t: Throwable) { if (firstErr == null) firstErr = t }
+                    try { raf.close() } catch (t: Throwable) { if (firstErr == null) firstErr = t }
+                    if (firstErr != null) {
+                        if (firstErr is java.io.IOException) throw firstErr
+                        throw java.io.IOException("Failed to close output file '${destFile.name}': ${firstErr.message}", firstErr)
+                    }
+                }
             }
-        )
+            TargetOutput(
+                outputStream = fos,
+                channel = raf.channel,
+                localFile = destFile,
+                documentUri = null,
+                close = {
+                    if (closed.compareAndSet(false, true)) {
+                        try { fos.flush() } catch (_: Exception) {}
+                        try { raf.fd.sync() } catch (_: Throwable) {}
+                        try { fos.close() } catch (_: Exception) {}
+                        try { raf.close() } catch (_: Exception) {}
+                    }
+                },
+                sync = { syncFileDescriptorStrict(raf.fd, raf.channel) },
+                closeStrict = closeStrictFn
+            )
+        } else {
+            val fos = FileOutputStream(destFile)
+            val closed = java.util.concurrent.atomic.AtomicBoolean(false)
+            val closeStrictFn: () -> Unit = {
+                if (closed.compareAndSet(false, true)) {
+                    var firstErr: Throwable? = null
+                    try { fos.flush() } catch (t: Throwable) { firstErr = t }
+                    try { fos.close() } catch (t: Throwable) { if (firstErr == null) firstErr = t }
+                    if (firstErr != null) {
+                        if (firstErr is java.io.IOException) throw firstErr
+                        throw java.io.IOException("Failed to close output file '${destFile.name}': ${firstErr.message}", firstErr)
+                    }
+                }
+            }
+            TargetOutput(
+                outputStream = fos,
+                channel = fos.channel,
+                localFile = destFile,
+                documentUri = null,
+                close = {
+                    if (closed.compareAndSet(false, true)) {
+                        try { fos.flush() } catch (_: Exception) {}
+                        try { fos.fd.sync() } catch (_: Throwable) {}
+                        try { fos.close() } catch (_: Exception) {}
+                    }
+                },
+                sync = { syncFileDescriptorStrict(fos.fd, fos.channel) },
+                closeStrict = closeStrictFn
+            )
+        }
     }
 
     fun getOrCreateDocumentSubfolder(context: Context, treeUri: Uri, folderName: String): Uri? {
@@ -1461,7 +2729,8 @@ object StorageHelper {
         treeUri: Uri,
         targetFolderDocUri: Uri,
         relativePath: String,
-        expectedBytes: Long
+        expectedBytes: Long,
+        randomAccess: Boolean = false
     ): TargetOutput? {
         return try {
             val cleanPath = relativePath.replace('\\', '/').trimStart('/')
@@ -1479,9 +2748,10 @@ object StorageHelper {
             val ext = fileName.substringAfterLast('.', "")
             val mimeType = getMimeTypeFromExtension(ext)
 
-            // Create document directly without an O(N) pre-delete directory cursor scan;
-            // only fall back to deleteChildIfPresent if createDocument returns null.
-            var fileDocUri = try {
+            // Remove any pre-existing incomplete/stale document with the same name before creating
+            // so Android ExternalStorageProvider never creates duplicate "file (1).ext" entries on resume/retry.
+            deleteChildIfPresent(context, treeUri, currentParent, fileName)
+            val fileDocUri = try {
                 DocumentsContract.createDocument(
                     context.contentResolver,
                     currentParent,
@@ -1490,40 +2760,388 @@ object StorageHelper {
                 )
             } catch (_: Throwable) {
                 null
-            }
-            if (fileDocUri == null) {
-                deleteChildIfPresent(context, treeUri, currentParent, fileName)
-                fileDocUri = DocumentsContract.createDocument(
-                    context.contentResolver,
-                    currentParent,
-                    mimeType,
-                    fileName
-                ) ?: return null
-            }
+            } ?: return null
 
-            // Open in sequential write-only ("w") mode first so FUSE uses write-behind page caching
-            val pfd = try {
-                context.contentResolver.openFileDescriptor(fileDocUri, "w")
-            } catch (_: Throwable) {
-                null
-            } ?: context.contentResolver.openFileDescriptor(fileDocUri, "rw")
-                ?: return null
+            val pfd = if (randomAccess) {
+                try {
+                    context.contentResolver.openFileDescriptor(fileDocUri, "rw")
+                } catch (_: Throwable) {
+                    null
+                } ?: context.contentResolver.openFileDescriptor(fileDocUri, "w")
+            } else {
+                // Open in sequential write-only ("w") mode first so FUSE uses write-behind page caching
+                try {
+                    context.contentResolver.openFileDescriptor(fileDocUri, "w")
+                } catch (_: Throwable) {
+                    null
+                } ?: context.contentResolver.openFileDescriptor(fileDocUri, "rw")
+            } ?: return null
 
             val fos = FileOutputStream(pfd.fileDescriptor)
+            val closed = java.util.concurrent.atomic.AtomicBoolean(false)
             TargetOutput(
                 outputStream = fos,
                 channel = fos.channel,
                 localFile = null,
                 documentUri = fileDocUri,
                 close = {
-                    try { fos.flush() } catch (_: Exception) {}
-                    try { fos.close() } catch (_: Exception) {}
-                    try { pfd.close() } catch (_: Exception) {}
+                    if (closed.compareAndSet(false, true)) {
+                        try { fos.flush() } catch (_: Exception) {}
+                        try { fos.fd.sync() } catch (_: Throwable) {}
+                        try { fos.close() } catch (_: Exception) {}
+                        try { pfd.close() } catch (_: Exception) {}
+                    }
+                },
+                sync = { syncFileDescriptorStrict(pfd.fileDescriptor, fos.channel) },
+                closeStrict = {
+                    if (closed.compareAndSet(false, true)) {
+                        var firstErr: Throwable? = null
+                        try { fos.flush() } catch (t: Throwable) { firstErr = t }
+                        try { fos.close() } catch (t: Throwable) { if (firstErr == null) firstErr = t }
+                        try { pfd.close() } catch (t: Throwable) { if (firstErr == null) firstErr = t }
+                        if (firstErr != null) {
+                            if (firstErr is java.io.IOException) throw firstErr
+                            throw java.io.IOException("Failed to close SAF output '$fileName': ${firstErr.message}", firstErr)
+                        }
+                    }
                 }
             )
         } catch (e: Exception) {
             e.printStackTrace()
             null
+        }
+    }
+
+    /**
+     * Positional append-only OutputStream backed by an already-opened `"rw"` [FileDescriptor] and
+     * [FileChannel]. Writes strictly at monotonically increasing offsets starting at [initialOffset],
+     * never truncating or overwriting checkpointed prefix bytes `[0, initialOffset)`.
+     */
+    private class PositionalDescriptorOutputStream(
+        private val fd: FileDescriptor,
+        private val outChannel: FileChannel,
+        initialOffset: Long
+    ) : OutputStream() {
+        private var writePosition: Long = initialOffset
+        private val singleByte = ByteArray(1)
+
+        override fun write(b: Int) {
+            singleByte[0] = b.toByte()
+            write(singleByte, 0, 1)
+        }
+
+        override fun write(b: ByteArray, off: Int, len: Int) {
+            if (len <= 0) return
+            var writtenTotal = 0
+            try {
+                val bb = ByteBuffer.wrap(b, off, len)
+                var pos = writePosition
+                while (bb.hasRemaining()) {
+                    val w = outChannel.write(bb, pos)
+                    if (w <= 0) break
+                    pos += w
+                    writtenTotal += w
+                }
+                if (writtenTotal == len) {
+                    writePosition = pos
+                    return
+                }
+            } catch (_: Throwable) {
+                // Fall back to POSIX pwrite for providers whose FileChannel does not support positional write
+            }
+
+            var rem = len - writtenTotal
+            var curOff = off + writtenTotal
+            var curPos = writePosition + writtenTotal
+            while (rem > 0) {
+                val w = try {
+                    Os.pwrite(fd, b, curOff, rem, curPos)
+                } catch (t: Throwable) {
+                    throw IOException("Failed positional SAF append at offset $curPos: ${t.localizedMessage ?: t.javaClass.simpleName}", t)
+                }
+                if (w <= 0) {
+                    throw IOException("Short positional SAF append at offset $curPos ($writtenTotal / $len bytes written)")
+                }
+                curOff += w
+                rem -= w
+                curPos += w
+                writtenTotal += w
+            }
+            writePosition = curPos
+        }
+
+        override fun flush() {
+            // Unbuffered positional writes go directly to the kernel descriptor; callers invoke TargetOutput.sync() for fsync.
+        }
+    }
+
+    private fun computeDescriptorPrefixCrc32(
+        fd: FileDescriptor,
+        channel: FileChannel,
+        byteCount: Long
+    ): Long {
+        if (byteCount < 0L) return -1L
+        if (byteCount == 0L) return 0L
+        val crc = CRC32()
+        val buf = ByteArray(64 * 1024)
+        var remaining = byteCount
+        var pos = 0L
+        while (remaining > 0L) {
+            val toRead = minOf(buf.size.toLong(), remaining).toInt()
+            val bb = ByteBuffer.wrap(buf, 0, toRead)
+            var rTotal = 0
+            while (bb.hasRemaining()) {
+                val r = try {
+                    channel.read(bb, pos)
+                } catch (_: Throwable) {
+                    try {
+                        Os.pread(fd, buf, rTotal, toRead - rTotal, pos).also { n ->
+                            if (n > 0) bb.position(bb.position() + n)
+                        }
+                    } catch (_: Throwable) {
+                        -1
+                    }
+                }
+                if (r <= 0) return -1L
+                pos += r
+                rTotal += r
+            }
+            crc.update(buf, 0, rTotal)
+            remaining -= rTotal
+        }
+        return crc.value
+    }
+
+    /**
+     * Read-only verification of an existing partial SAF output file for transactional DEFLATE recovery.
+     * Never deletes, recreates, or truncates the file. Verifies `"rw"` access, regular-file descriptor,
+     * positional `pwrite`/`ftruncate`/`fsync` capabilities, `size >= expectedOffset`, and exact prefix CRC32.
+     */
+    fun verifySafPartialOutputForRecovery(
+        context: Context,
+        treeUri: Uri,
+        rootFolderDocUri: Uri,
+        relativePath: String,
+        expectedOffset: Long,
+        expectedPrefixCrc32: Long
+    ): SafPartialOutputVerification {
+        val docUri = findSafRelativeDocumentUri(context, treeUri, rootFolderDocUri, relativePath)
+            ?: return SafPartialOutputVerification(
+                isValid = false,
+                failureReason = "Partial SAF output file for '$relativePath' is missing in the selected destination folder."
+            )
+
+        val pfd = try {
+            context.contentResolver.openFileDescriptor(docUri, "rw")
+        } catch (t: Throwable) {
+            return SafPartialOutputVerification(
+                isValid = false,
+                documentUri = docUri,
+                failureReason = "SAF destination provider denied read-write ('rw') access to partial output '$relativePath' (${t.localizedMessage ?: t.javaClass.simpleName}); requires a seekable read-write SAF provider or direct-POSIX access."
+            )
+        } ?: return SafPartialOutputVerification(
+            isValid = false,
+            documentUri = docUri,
+            failureReason = "SAF destination provider returned a null read-write descriptor for partial output '$relativePath'; requires a seekable read-write SAF provider or direct-POSIX access."
+        )
+
+        return try {
+            pfd.use { descriptor ->
+                FileInputStream(descriptor.fileDescriptor).use { fis ->
+                    val ch = fis.channel
+                    val probe = probeTransactableFileDescriptor(
+                        fd = descriptor.fileDescriptor,
+                        channel = ch,
+                        requireWriteAndTruncate = true
+                    )
+                    if (!probe.isSupported) {
+                        return@use SafPartialOutputVerification(
+                            isValid = false,
+                            documentUri = docUri,
+                            actualSize = probe.sizeBytes,
+                            failureReason = "SAF destination provider cannot safely recover partial output '$relativePath': ${probe.reason} Requires a seekable read-write SAF provider supporting truncate and fsync, or direct-POSIX access."
+                        )
+                    }
+                    if (probe.sizeBytes < expectedOffset) {
+                        return@use SafPartialOutputVerification(
+                            isValid = false,
+                            documentUri = docUri,
+                            actualSize = probe.sizeBytes,
+                            failureReason = "Partial SAF output file for '$relativePath' is shorter than checkpoint offset (${probe.sizeBytes} < $expectedOffset)."
+                        )
+                    }
+                    val actualPrefixCrc = computeDescriptorPrefixCrc32(descriptor.fileDescriptor, ch, expectedOffset)
+                    if (actualPrefixCrc != expectedPrefixCrc32) {
+                        return@use SafPartialOutputVerification(
+                            isValid = false,
+                            documentUri = docUri,
+                            actualSize = probe.sizeBytes,
+                            actualPrefixCrc32 = actualPrefixCrc,
+                            failureReason = "Partial SAF output prefix CRC32 mismatch for '$relativePath' (expected 0x${String.format("%08X", expectedPrefixCrc32)}, got 0x${String.format("%08X", actualPrefixCrc)})."
+                        )
+                    }
+                    SafPartialOutputVerification(
+                        isValid = true,
+                        documentUri = docUri,
+                        actualSize = probe.sizeBytes,
+                        actualPrefixCrc32 = actualPrefixCrc,
+                        failureReason = null
+                    )
+                }
+            }
+        } catch (t: Throwable) {
+            SafPartialOutputVerification(
+                isValid = false,
+                documentUri = docUri,
+                failureReason = "Failed to verify partial SAF output '$relativePath': ${t.localizedMessage ?: t.javaClass.simpleName}"
+            )
+        }
+    }
+
+    /**
+     * Reopens an existing partial SAF output file in `"rw"` mode WITHOUT deleting or truncating
+     * checkpointed data `[0, expectedOffset)`:
+     * 1. Probes regular-file `"rw"`, `pwrite`, `ftruncate`, and strict `fsync` capabilities.
+     * 2. Verifies `actualSize >= expectedOffset`.
+     * 3. Trims any uncommitted trailing bytes above `expectedOffset` via `ftruncate` + strict `fsync`.
+     * 4. Verifies exact prefix CRC32 over `[0, expectedOffset)`.
+     * 5. Returns a [TargetOutput] that appends strictly from `expectedOffset` with strict `fsync`.
+     */
+    fun openExistingSafOutputForRecovery(
+        context: Context,
+        treeUri: Uri,
+        rootFolderDocUri: Uri,
+        relativePath: String,
+        expectedOffset: Long,
+        expectedPrefixCrc32: Long
+    ): SafRecoveryOutputOpenResult {
+        val docUri = findSafRelativeDocumentUri(context, treeUri, rootFolderDocUri, relativePath)
+            ?: return SafRecoveryOutputOpenResult.Failed(
+                "Partial SAF output file for '$relativePath' is missing in destination folder."
+            )
+
+        val pfd = try {
+            context.contentResolver.openFileDescriptor(docUri, "rw")
+        } catch (t: Throwable) {
+            return SafRecoveryOutputOpenResult.Failed(
+                "SAF destination provider denied read-write ('rw') access to partial output '$relativePath' (${t.localizedMessage ?: t.javaClass.simpleName})."
+            )
+        } ?: return SafRecoveryOutputOpenResult.Failed(
+            "SAF destination provider returned null read-write descriptor for partial output '$relativePath'."
+        )
+
+        var keepOpen = false
+        try {
+            val fd = pfd.fileDescriptor
+            val inStream = FileInputStream(fd)
+            val readCh = inStream.channel
+            val outStream = FileOutputStream(fd)
+            val outCh = outStream.channel
+
+            val probe = probeTransactableFileDescriptor(fd, readCh, requireWriteAndTruncate = true)
+            if (!probe.isSupported) {
+                return SafRecoveryOutputOpenResult.Failed(
+                    "SAF destination provider cannot safely recover partial output '$relativePath': ${probe.reason}"
+                )
+            }
+            if (probe.sizeBytes < expectedOffset) {
+                return SafRecoveryOutputOpenResult.Failed(
+                    "Partial SAF output file for '$relativePath' is shorter than checkpoint offset (${probe.sizeBytes} < $expectedOffset)."
+                )
+            }
+
+            var trimmedBytes = 0L
+            if (probe.sizeBytes > expectedOffset) {
+                var truncated = false
+                try {
+                    outCh.truncate(expectedOffset)
+                    truncated = true
+                } catch (_: Throwable) {
+                }
+                if (!truncated) {
+                    try {
+                        Os.ftruncate(fd, expectedOffset)
+                        truncated = true
+                    } catch (_: LinkageError) {
+                    } catch (_: Throwable) {
+                    }
+                }
+                if (!truncated) {
+                    return SafRecoveryOutputOpenResult.Failed(
+                        "Failed to truncate uncommitted trailing bytes of partial SAF output '$relativePath' back to $expectedOffset."
+                    )
+                }
+                if (!syncFileDescriptorStrict(fd, outCh)) {
+                    return SafRecoveryOutputOpenResult.Failed(
+                        "Failed to fsync partial SAF output '$relativePath' after trimming uncommitted trailing bytes."
+                    )
+                }
+                val newSize = try { readCh.size() } catch (_: Throwable) { -1L }
+                if (newSize != expectedOffset) {
+                    return SafRecoveryOutputOpenResult.Failed(
+                        "Partial SAF output '$relativePath' length after trim ($newSize) does not match checkpoint offset ($expectedOffset)."
+                    )
+                }
+                trimmedBytes = probe.sizeBytes - expectedOffset
+            }
+
+            val actualPrefixCrc = computeDescriptorPrefixCrc32(fd, readCh, expectedOffset)
+            if (actualPrefixCrc != expectedPrefixCrc32) {
+                return SafRecoveryOutputOpenResult.Failed(
+                    "Partial SAF output prefix CRC32 mismatch for '$relativePath' (expected 0x${String.format("%08X", expectedPrefixCrc32)}, got 0x${String.format("%08X", actualPrefixCrc)})."
+                )
+            }
+
+            val appendStream = PositionalDescriptorOutputStream(
+                fd = fd,
+                outChannel = outCh,
+                initialOffset = expectedOffset
+            )
+            val closed = java.util.concurrent.atomic.AtomicBoolean(false)
+            val targetOutput = TargetOutput(
+                outputStream = appendStream,
+                channel = outCh,
+                localFile = null,
+                documentUri = docUri,
+                close = {
+                    if (closed.compareAndSet(false, true)) {
+                        try { appendStream.flush() } catch (_: Throwable) {}
+                        try { syncFileDescriptorStrict(fd, outCh) } catch (_: Throwable) {}
+                        try { outStream.close() } catch (_: Throwable) {}
+                        try { inStream.close() } catch (_: Throwable) {}
+                        try { pfd.close() } catch (_: Throwable) {}
+                    }
+                },
+                sync = { syncFileDescriptorStrict(fd, outCh) },
+                closeStrict = {
+                    if (closed.compareAndSet(false, true)) {
+                        var firstErr: Throwable? = null
+                        try { appendStream.flush() } catch (t: Throwable) { firstErr = t }
+                        try { outStream.close() } catch (t: Throwable) { if (firstErr == null) firstErr = t }
+                        try { inStream.close() } catch (t: Throwable) { if (firstErr == null) firstErr = t }
+                        try { pfd.close() } catch (t: Throwable) { if (firstErr == null) firstErr = t }
+                        if (firstErr != null) {
+                            if (firstErr is java.io.IOException) throw firstErr
+                            throw java.io.IOException("Failed to close SAF recovery output '$relativePath': ${firstErr.message}", firstErr)
+                        }
+                    }
+                }
+            )
+            keepOpen = true
+            return SafRecoveryOutputOpenResult.Opened(
+                targetOutput = targetOutput,
+                documentUri = docUri,
+                verifiedPrefixBytes = expectedOffset,
+                trimmedTrailingBytes = trimmedBytes
+            )
+        } catch (t: Throwable) {
+            return SafRecoveryOutputOpenResult.Failed(
+                "Failed to reopen partial SAF output '$relativePath': ${t.localizedMessage ?: t.javaClass.simpleName}"
+            )
+        } finally {
+            if (!keepOpen) {
+                try { pfd.close() } catch (_: Throwable) {}
+            }
         }
     }
 
@@ -1549,11 +3167,151 @@ object StorageHelper {
                         val docId = cursor.getString(idCol)
                         val childUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, docId)
                         DocumentsContract.deleteDocument(context.contentResolver, childUri)
-                        break
                     }
                 }
             }
         } catch (_: Exception) {}
+    }
+
+    /**
+     * Verifies that a SAF destination tree URI (and its target extraction subfolder) is accessible
+     * and writable. Returns the resolved target folder document URI if accessible, or `null` if
+     * SAF permissions were revoked or the destination folder is inaccessible.
+     */
+    fun verifySafDestinationAccessible(
+        context: Context,
+        treeUri: Uri,
+        targetFolderDocUri: Uri?,
+        subfolderName: String?
+    ): Uri? {
+        return try {
+            val treeDocId = DocumentsContract.getTreeDocumentId(treeUri)
+            val rootChildrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, treeDocId)
+            // Verify we can actively query the tree URI (fails with SecurityException or null cursor if permission revoked)
+            val rootQueryOk = context.contentResolver.query(
+                rootChildrenUri,
+                arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID),
+                null, null, null
+            )?.use { true } ?: false
+            if (!rootQueryOk) return null
+
+            val cleanSubfolder = subfolderName?.takeIf { it.isNotEmpty() }
+            val resolvedFolderUri = if (targetFolderDocUri != null) {
+                val folderDocId = DocumentsContract.getDocumentId(targetFolderDocUri)
+                val folderChildrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, folderDocId)
+                val folderExists = try {
+                    context.contentResolver.query(
+                        folderChildrenUri,
+                        arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID),
+                        null, null, null
+                    )?.use { true } ?: false
+                } catch (_: Throwable) {
+                    false
+                }
+                if (folderExists) {
+                    targetFolderDocUri
+                } else if (cleanSubfolder != null) {
+                    clearSafDirCache()
+                    getOrCreateDocumentSubfolder(context, treeUri, cleanSubfolder)
+                } else {
+                    null
+                }
+            } else if (cleanSubfolder != null) {
+                getOrCreateDocumentSubfolder(context, treeUri, cleanSubfolder)
+            } else {
+                DocumentsContract.buildDocumentUriUsingTree(treeUri, treeDocId)
+            }
+            resolvedFolderUri
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    /**
+     * Resolves an existing relative document path under [rootFolderDocUri] without creating missing folders.
+     */
+    fun findSafRelativeDocumentUri(
+        context: Context,
+        treeUri: Uri,
+        rootFolderDocUri: Uri,
+        relativePath: String
+    ): Uri? {
+        return try {
+            val cleanPath = relativePath.replace('\\', '/').trimStart('/')
+            val segments = cleanPath.split('/').filter { it.isNotEmpty() }
+            if (segments.isEmpty()) return null
+
+            var currentDocUri = rootFolderDocUri
+            for ((index, segment) in segments.withIndex()) {
+                val isLast = index == segments.lastIndex
+                val parentDocId = DocumentsContract.getDocumentId(currentDocUri)
+                val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, parentDocId)
+                var matchedChildUri: Uri? = null
+                context.contentResolver.query(
+                    childrenUri,
+                    arrayOf(
+                        DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                        DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                        DocumentsContract.Document.COLUMN_MIME_TYPE
+                    ),
+                    null, null, null
+                )?.use { cursor ->
+                    val idCol = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+                    val nameCol = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+                    val mimeCol = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_MIME_TYPE)
+                    while (cursor.moveToNext()) {
+                        val name = cursor.getString(nameCol)
+                        val mime = if (mimeCol >= 0) cursor.getString(mimeCol) else ""
+                        if (name == segment) {
+                            if (!isLast && mime != DocumentsContract.Document.MIME_TYPE_DIR) continue
+                            val docId = cursor.getString(idCol)
+                            matchedChildUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, docId)
+                            break
+                        }
+                    }
+                }
+                currentDocUri = matchedChildUri ?: return null
+            }
+            currentDocUri
+        } catch (_: Throwable) {
+            null
+        }
+    }
+
+    /**
+     * Verifies that an extracted file inside a SAF destination exists, matches [expectedSize],
+     * and matches [expectedCrc32] (when non-null) via full-stream CRC32 check.
+     */
+    fun verifySafOutputFileIntegrity(
+        context: Context,
+        treeUri: Uri,
+        rootFolderDocUri: Uri,
+        relativePath: String,
+        expectedSize: Long,
+        expectedCrc32: Long?
+    ): Boolean {
+        return try {
+            val docUri = findSafRelativeDocumentUri(context, treeUri, rootFolderDocUri, relativePath)
+                ?: return false
+            context.contentResolver.openInputStream(docUri)?.use { input ->
+                val crc = java.util.zip.CRC32()
+                val buf = ByteArray(64 * 1024)
+                var totalRead = 0L
+                while (true) {
+                    val r = input.read(buf)
+                    if (r <= 0) break
+                    crc.update(buf, 0, r)
+                    totalRead += r
+                }
+                if (expectedSize >= 0L && totalRead != expectedSize) return false
+                if (expectedCrc32 != null && (crc.value and 0xFFFFFFFFL) != (expectedCrc32 and 0xFFFFFFFFL)) {
+                    return false
+                }
+                true
+            } ?: false
+        } catch (_: Throwable) {
+            false
+        }
     }
 
     fun deleteSafDocument(context: Context, documentUri: Uri): Boolean {
@@ -1628,6 +3386,7 @@ object StorageHelper {
                 RandomAccessFile(directFile, "rw").use { raf ->
                     raf.setLength(0L)
                 }
+                registerActiveCompressionFile(directFile)
                 return GrantedFolderArchiveTarget(
                     workingFile = directFile,
                     directPosixFile = directFile,
@@ -1640,16 +3399,29 @@ object StorageHelper {
             }
         }
 
+        if (createdDocUri == null) {
+            throw java.io.IOException(
+                "Failed to create archive '$fileName' in selected SAF destination folder (${folderInfo.displayName})"
+            )
+        }
+
         val tempWorkingFile = File(getTempDir(context), fileName)
-        if (tempWorkingFile.exists()) {
-            tempWorkingFile.delete()
+        if (tempWorkingFile.exists() && !isCompressionFileActive(tempWorkingFile)) {
+            cleanupCompressionFile(context, tempWorkingFile, "prepare_overwrite_stale_temp")
+        }
+        registerActiveCompressionFile(tempWorkingFile)
+        runCatching {
+            android.util.Log.d(
+                TAG_STORAGE,
+                "Created compression temp target: path=${tempWorkingFile.absolutePath} safDoc=$createdDocUri"
+            )
         }
         return GrantedFolderArchiveTarget(
             workingFile = tempWorkingFile,
             directPosixFile = null,
             documentUri = createdDocUri,
             folderDisplayLabel = folderInfo.displayName,
-            requiresSafStreamOnFinish = createdDocUri != null
+            requiresSafStreamOnFinish = true
         )
     }
 
@@ -1658,19 +3430,237 @@ object StorageHelper {
         target: GrantedFolderArchiveTarget
     ): Long {
         if (!target.requiresSafStreamOnFinish) {
+            unregisterActiveCompressionFile(target.workingFile)
             return target.workingFile.length()
         }
-        val docUri = target.documentUri ?: return target.workingFile.length()
+        val docUri = target.documentUri ?: run {
+            cleanupCompressionFile(context, target.workingFile, "finalize_missing_saf_doc_uri", forceUnregister = true)
+            throw java.io.IOException("Missing SAF document URI for finalized archive '${target.workingFile.name}'")
+        }
         val finalSize = target.workingFile.length()
         try {
-            exportFileToUri(context, target.workingFile, docUri)
-        } finally {
+            val exported = exportFileToUri(context, target.workingFile, docUri)
+            if (!exported) {
+                runCatching { deleteSafDocument(context, docUri) }
+                throw java.io.IOException(
+                    "Failed to stream temporary archive '${target.workingFile.name}' to selected SAF folder"
+                )
+            }
             try {
-                target.workingFile.delete()
+                context.contentResolver.openFileDescriptor(docUri, "rw")?.use { pfd ->
+                    try { pfd.fileDescriptor.sync() } catch (_: Throwable) {}
+                }
             } catch (_: Throwable) {
             }
+        } finally {
+            cleanupCompressionFile(
+                context = context,
+                file = target.workingFile,
+                reason = "finalizeArchiveTargetInGrantedFolder",
+                forceUnregister = true
+            )
         }
         return finalSize
+    }
+
+    val EXTRACTED_ENTRY_COMPARATOR: Comparator<ExtractedFileEntry> =
+        compareBy<ExtractedFileEntry> { !it.isDirectory }
+            .thenBy(String.CASE_INSENSITIVE_ORDER) { it.name }
+            .thenBy { it.name }
+            .thenBy { it.id }
+
+    fun sortExtractedEntries(entries: List<ExtractedFileEntry>): List<ExtractedFileEntry> {
+        val size = entries.size
+        if (size <= 1) return entries
+        var alreadySorted = true
+        for (i in 1 until size) {
+            if (EXTRACTED_ENTRY_COMPARATOR.compare(entries[i - 1], entries[i]) > 0) {
+                alreadySorted = false
+                break
+            }
+        }
+        if (alreadySorted) return entries
+        return entries.sortedWith(EXTRACTED_ENTRY_COMPARATOR)
+    }
+
+    private data class LocalFolderQuickStats(
+        val totalBytes: Long,
+        val totalFileCount: Int,
+        val hasAnyDirectory: Boolean
+    )
+
+    private fun computeLocalFolderQuickStats(rootFolder: File, maxVisitedEntries: Int = 25_000): LocalFolderQuickStats {
+        var totalBytes = 0L
+        var fileCount = 0
+        var hasAnyDir = false
+        var visited = 0
+        val stack = ArrayDeque<File>()
+        stack.addLast(rootFolder)
+        while (stack.isNotEmpty() && visited < maxVisitedEntries) {
+            val current = stack.removeLast()
+            val list = try { current.listFiles() } catch (_: Throwable) { null } ?: continue
+            for (child in list) {
+                val childName = child.name
+                if (childName.startsWith(".kaihatch_")) continue
+                visited++
+                if (child.isDirectory) {
+                    hasAnyDir = true
+                    if (visited < maxVisitedEntries) {
+                        stack.addLast(child)
+                    }
+                } else {
+                    fileCount++
+                    totalBytes += child.length().coerceAtLeast(0L)
+                }
+            }
+        }
+        return LocalFolderQuickStats(
+            totalBytes = totalBytes,
+            totalFileCount = fileCount,
+            hasAnyDirectory = hasAnyDir
+        )
+    }
+
+    fun listLocalDirectoryDirectChildren(
+        dir: File,
+        parentRelativePath: String = "",
+        isSafBacked: Boolean = false,
+        safTreeUri: Uri? = null,
+        safDirectMapByName: Map<String, ExtractedFileEntry> = emptyMap()
+    ): List<ExtractedFileEntry> {
+        val rawFiles = try { dir.listFiles() } catch (_: Throwable) { null } ?: return emptyList()
+        val parentPath = dir.absolutePath
+        val result = ArrayList<ExtractedFileEntry>(rawFiles.size)
+        for (f in rawFiles) {
+            val name = f.name
+            if (name.startsWith(".kaihatch_")) continue
+            val isDir = f.isDirectory
+            val matchSaf = safDirectMapByName[name]
+            val relPath = if (parentRelativePath.isEmpty()) name else "$parentRelativePath/$name"
+            val entryId = f.absolutePath
+            result.add(
+                ExtractedFileEntry(
+                    id = entryId,
+                    name = name,
+                    sizeBytes = if (isDir) 0L else f.length().coerceAtLeast(matchSaf?.sizeBytes ?: 0L),
+                    mimeType = if (isDir) DocumentsContract.Document.MIME_TYPE_DIR else getMimeTypeFromExtension(f.extension),
+                    localFile = f,
+                    safUri = matchSaf?.safUri,
+                    isSaf = isSafBacked,
+                    isDirectory = isDir,
+                    relativePath = relPath,
+                    parentId = parentPath,
+                    safTreeUri = safTreeUri ?: matchSaf?.safTreeUri,
+                    safDocId = matchSaf?.safDocId
+                )
+            )
+        }
+        return sortExtractedEntries(result)
+    }
+
+    fun listSafDirectoryDirectChildren(
+        context: Context,
+        treeUri: Uri,
+        parentDocId: String,
+        parentRelativePath: String = "",
+        posixDir: File? = null
+    ): List<ExtractedFileEntry> {
+        val safEntries = mutableListOf<ExtractedFileEntry>()
+        try {
+            val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, parentDocId)
+            context.contentResolver.query(
+                childrenUri,
+                arrayOf(
+                    DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                    DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                    DocumentsContract.Document.COLUMN_MIME_TYPE,
+                    DocumentsContract.Document.COLUMN_SIZE
+                ),
+                null, null, null
+            )?.use { cursor ->
+                val idCol = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
+                val nameCol = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
+                val mimeCol = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_MIME_TYPE)
+                val sizeCol = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_SIZE)
+
+                while (cursor.moveToNext()) {
+                    val docId = cursor.getString(idCol) ?: continue
+                    val displayName = cursor.getString(nameCol) ?: continue
+                    if (displayName.startsWith(".kaihatch_")) continue
+                    val mime = cursor.getString(mimeCol) ?: "application/octet-stream"
+                    val isDir = mime == DocumentsContract.Document.MIME_TYPE_DIR
+                    val size = if (!isDir && sizeCol != -1 && !cursor.isNull(sizeCol)) cursor.getLong(sizeCol) else 0L
+                    val docUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, docId)
+                    val relPath = if (parentRelativePath.isEmpty()) displayName else "$parentRelativePath/$displayName"
+                    val childLocalFile = posixDir?.let { File(it, displayName) }?.takeIf { it.exists() }
+                    safEntries.add(
+                        ExtractedFileEntry(
+                            id = childLocalFile?.absolutePath ?: docId,
+                            name = displayName,
+                            sizeBytes = if (isDir) 0L else (childLocalFile?.length()?.coerceAtLeast(size) ?: size),
+                            mimeType = if (isDir) DocumentsContract.Document.MIME_TYPE_DIR else mime,
+                            localFile = childLocalFile,
+                            safUri = docUri,
+                            isSaf = true,
+                            isDirectory = isDir,
+                            relativePath = relPath,
+                            parentId = posixDir?.absolutePath ?: parentDocId,
+                            safTreeUri = treeUri,
+                            safDocId = docId
+                        )
+                    )
+                }
+            }
+        } catch (_: Exception) {
+        }
+
+        if (posixDir != null && posixDir.exists() && posixDir.isDirectory) {
+            val safMapByName = safEntries.associateBy { it.name }
+            val posixChildren = listLocalDirectoryDirectChildren(
+                dir = posixDir,
+                parentRelativePath = parentRelativePath,
+                isSafBacked = true,
+                safTreeUri = treeUri,
+                safDirectMapByName = safMapByName
+            )
+            if (posixChildren.size >= safEntries.size && posixChildren.isNotEmpty()) {
+                return posixChildren
+            }
+        }
+
+        return sortExtractedEntries(safEntries)
+    }
+
+    /**
+     * Lazily enumerates the direct children of a single subfolder (1 level only, never recursive).
+     * Supports both local POSIX directories and SAF document trees, sorting folders first then files alphabetically.
+     */
+    fun listExtractedSubfolderChildren(
+        context: Context,
+        subfolder: ExtractedFileEntry
+    ): List<ExtractedFileEntry> {
+        if (!subfolder.isDirectory) return emptyList()
+        val treeUri = subfolder.safTreeUri
+        val docId = subfolder.safDocId
+        val localDir = subfolder.localFile
+        if (treeUri != null && !docId.isNullOrEmpty()) {
+            return listSafDirectoryDirectChildren(
+                context = context,
+                treeUri = treeUri,
+                parentDocId = docId,
+                parentRelativePath = subfolder.relativePath,
+                posixDir = localDir
+            )
+        }
+        if (localDir != null && localDir.exists() && localDir.isDirectory) {
+            return listLocalDirectoryDirectChildren(
+                dir = localDir,
+                parentRelativePath = subfolder.relativePath,
+                isSafBacked = subfolder.isSaf,
+                safTreeUri = treeUri
+            )
+        }
+        return emptyList()
     }
 
     fun listSafExtractedFolders(context: Context, treeUri: Uri): List<ExtractedFolderEntry> {
@@ -1702,31 +3692,22 @@ object StorageHelper {
 
                     if (mime == DocumentsContract.Document.MIME_TYPE_DIR && displayName.endsWith("_extracted")) {
                         val docUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, docId)
-                        val safChildren = listSafFolderChildren(context, treeUri, docId)
                         val posixSubfolder = posixRoot?.let { File(it, displayName) }?.takeIf { it.exists() && it.isDirectory }
-                        val posixChildren = if (posixSubfolder != null) {
-                            val safMapByName = safChildren.associateBy { it.name }
-                            listFilesFlat(posixSubfolder).filter { !it.name.startsWith(".kaihatch_") }.map { f ->
-                                val matchSaf = safMapByName[f.name]
-                                ExtractedFileEntry(
-                                    id = matchSaf?.id ?: f.absolutePath,
-                                    name = f.name,
-                                    sizeBytes = f.length().coerceAtLeast(matchSaf?.sizeBytes ?: 0L),
-                                    mimeType = getMimeTypeFromExtension(f.extension),
-                                    localFile = f,
-                                    safUri = matchSaf?.safUri,
-                                    isSaf = true
-                                )
+                        val directChildren = listSafDirectoryDirectChildren(
+                            context = context,
+                            treeUri = treeUri,
+                            parentDocId = docId,
+                            parentRelativePath = "",
+                            posixDir = posixSubfolder
+                        )
+                        val quickStats = posixSubfolder?.let { computeLocalFolderQuickStats(it) }
+                        val totalSize = quickStats?.totalBytes ?: directChildren.sumOf { it.sizeBytes }
+                        val totalFileCount = quickStats?.totalFileCount?.takeIf { it > 0 } ?: directChildren.size
+                        val hasSubfolders = directChildren.any { it.isDirectory }
+                        if (directChildren.isNotEmpty() && (totalSize > 0L || hasSubfolders)) {
+                            val precomputedCanonical = posixSubfolder?.let {
+                                runCatching { it.canonicalPath }.getOrNull() ?: it.absolutePath
                             }
-                        } else emptyList()
-
-                        val mergedChildren = if (posixChildren.size >= safChildren.size && posixChildren.isNotEmpty()) {
-                            posixChildren
-                        } else {
-                            safChildren
-                        }
-                        val totalSize = mergedChildren.sumOf { it.sizeBytes }
-                        if (mergedChildren.isNotEmpty() && totalSize > 0L) {
                             result.add(
                                 ExtractedFolderEntry(
                                     id = docId,
@@ -1735,8 +3716,12 @@ object StorageHelper {
                                     localFile = posixSubfolder,
                                     safUri = docUri,
                                     totalSizeBytes = totalSize,
-                                    children = mergedChildren,
-                                    locationDescription = "Folder \"${folderInfo.displayName}\" (${folderInfo.readablePath})"
+                                    children = directChildren,
+                                    locationDescription = "Folder \"${folderInfo.displayName}\" (${folderInfo.readablePath})",
+                                    totalFileCount = totalFileCount,
+                                    safTreeUri = treeUri,
+                                    safDocId = docId,
+                                    canonicalPath = precomputedCanonical
                                 )
                             )
                         }
@@ -1750,19 +3735,17 @@ object StorageHelper {
             try {
                 posixRoot.listFiles()?.filter { it.isDirectory && it.name.endsWith("_extracted") }?.forEach { folder ->
                     if (result.none { it.name.equals(folder.name, ignoreCase = true) }) {
-                        val files = listFilesFlat(folder).filter { !it.name.startsWith(".kaihatch_") }.map { f ->
-                            ExtractedFileEntry(
-                                id = f.absolutePath,
-                                name = f.name,
-                                sizeBytes = f.length(),
-                                mimeType = getMimeTypeFromExtension(f.extension),
-                                localFile = f,
-                                safUri = null,
-                                isSaf = true
-                            )
-                        }
-                        val totalBytes = files.sumOf { it.sizeBytes }
-                        if (files.isNotEmpty() && totalBytes > 0L) {
+                        val directChildren = listLocalDirectoryDirectChildren(
+                            dir = folder,
+                            parentRelativePath = "",
+                            isSafBacked = true,
+                            safTreeUri = treeUri
+                        )
+                        val quickStats = computeLocalFolderQuickStats(folder)
+                        val totalBytes = quickStats.totalBytes
+                        val hasSubfolders = directChildren.any { it.isDirectory }
+                        if (directChildren.isNotEmpty() && (totalBytes > 0L || hasSubfolders)) {
+                            val precomputedCanonical = runCatching { folder.canonicalPath }.getOrNull() ?: folder.absolutePath
                             result.add(
                                 ExtractedFolderEntry(
                                     id = folder.absolutePath,
@@ -1771,8 +3754,12 @@ object StorageHelper {
                                     localFile = folder,
                                     safUri = null,
                                     totalSizeBytes = totalBytes,
-                                    children = files,
-                                    locationDescription = "Folder \"${folderInfo.displayName}\" (${folderInfo.readablePath})"
+                                    children = directChildren,
+                                    locationDescription = "Folder \"${folderInfo.displayName}\" (${folderInfo.readablePath})",
+                                    totalFileCount = quickStats.totalFileCount.takeIf { it > 0 } ?: directChildren.size,
+                                    safTreeUri = treeUri,
+                                    safDocId = null,
+                                    canonicalPath = precomputedCanonical
                                 )
                             )
                         }
@@ -1782,58 +3769,6 @@ object StorageHelper {
             }
         }
         return result
-    }
-
-    private fun listSafFolderChildren(
-        context: Context,
-        treeUri: Uri,
-        parentDocId: String
-    ): List<ExtractedFileEntry> {
-        val result = mutableListOf<ExtractedFileEntry>()
-        try {
-            val childrenUri = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, parentDocId)
-            context.contentResolver.query(
-                childrenUri,
-                arrayOf(
-                    DocumentsContract.Document.COLUMN_DOCUMENT_ID,
-                    DocumentsContract.Document.COLUMN_DISPLAY_NAME,
-                    DocumentsContract.Document.COLUMN_MIME_TYPE,
-                    DocumentsContract.Document.COLUMN_SIZE
-                ),
-                null, null, null
-            )?.use { cursor ->
-                val idCol = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DOCUMENT_ID)
-                val nameCol = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_DISPLAY_NAME)
-                val mimeCol = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_MIME_TYPE)
-                val sizeCol = cursor.getColumnIndex(DocumentsContract.Document.COLUMN_SIZE)
-
-                while (cursor.moveToNext()) {
-                    val docId = cursor.getString(idCol)
-                    val displayName = cursor.getString(nameCol) ?: continue
-                    val mime = cursor.getString(mimeCol) ?: "application/octet-stream"
-                    val size = if (sizeCol != -1 && !cursor.isNull(sizeCol)) cursor.getLong(sizeCol) else 0L
-
-                    if (mime != DocumentsContract.Document.MIME_TYPE_DIR) {
-                        val docUri = DocumentsContract.buildDocumentUriUsingTree(treeUri, docId)
-                        result.add(
-                            ExtractedFileEntry(
-                                id = docId,
-                                name = displayName,
-                                sizeBytes = size,
-                                mimeType = mime,
-                                localFile = null,
-                                safUri = docUri,
-                                isSaf = true
-                            )
-                        )
-                    } else {
-                        // Recursively add nested files
-                        result.addAll(listSafFolderChildren(context, treeUri, docId))
-                    }
-                }
-            }
-        } catch (_: Exception) {}
-        return result.sortedBy { it.name.lowercase() }
     }
 
     fun listFilesFlat(folder: File): List<File> {
@@ -1856,21 +3791,18 @@ object StorageHelper {
         if (!dir.exists()) return emptyList()
         val result = mutableListOf<ExtractedFolderEntry>()
         dir.listFiles()?.filter { it.isDirectory }?.forEach { folder ->
-            val files = listFilesFlat(folder).map { f ->
-                ExtractedFileEntry(
-                    id = f.absolutePath,
-                    name = f.name,
-                    sizeBytes = f.length(),
-                    mimeType = getMimeTypeFromExtension(f.extension),
-                    localFile = f,
-                    safUri = null,
-                    isSaf = false
-                )
-            }
-            val totalBytes = files.sumOf { it.sizeBytes }
-            if (files.isEmpty() || totalBytes <= 0L) {
+            val directChildren = listLocalDirectoryDirectChildren(
+                dir = folder,
+                parentRelativePath = "",
+                isSafBacked = false
+            )
+            val quickStats = computeLocalFolderQuickStats(folder)
+            val totalBytes = quickStats.totalBytes
+            val hasSubfolders = directChildren.any { it.isDirectory }
+            if (directChildren.isEmpty() || (totalBytes <= 0L && !hasSubfolders)) {
                 try { folder.deleteRecursively() } catch (_: Exception) {}
             } else {
+                val precomputedCanonical = runCatching { folder.canonicalPath }.getOrNull() ?: folder.absolutePath
                 result.add(
                     ExtractedFolderEntry(
                         id = folder.absolutePath,
@@ -1879,8 +3811,10 @@ object StorageHelper {
                         localFile = folder,
                         safUri = null,
                         totalSizeBytes = totalBytes,
-                        children = files,
-                        locationDescription = "Local Storage"
+                        children = directChildren,
+                        locationDescription = "Local Storage",
+                        totalFileCount = quickStats.totalFileCount.takeIf { it > 0 } ?: directChildren.size,
+                        canonicalPath = precomputedCanonical
                     )
                 )
             }
@@ -1973,13 +3907,29 @@ object StorageHelper {
                 .replace(Regex("[^a-zA-Z0-9._\\- ()]"), "_")
                 .ifBlank { "Folder_${System.currentTimeMillis() / 1000}" }
             val targetRoot = File(stagingParentDir, safeFolderName)
-            if (targetRoot.exists()) targetRoot.deleteRecursively()
+            if (targetRoot.exists() && !isCompressionFileActive(targetRoot)) {
+                cleanupCompressionFile(context, targetRoot, "restage_saf_folder")
+            }
             targetRoot.mkdirs()
 
             val treeDocId = DocumentsContract.getTreeDocumentId(treeUri)
             copySafFolderRecursiveToLocal(context, treeUri, treeDocId, targetRoot)
-            if (targetRoot.listFiles()?.isNotEmpty() == true) targetRoot else null
-        } catch (_: Throwable) {
+            if (targetRoot.listFiles()?.isNotEmpty() == true) {
+                runCatching {
+                    android.util.Log.d(
+                        TAG_STORAGE,
+                        "Staged SAF folder for compression: path=${targetRoot.absolutePath} bytes=${getDirectorySize(targetRoot)}"
+                    )
+                }
+                targetRoot
+            } else {
+                cleanupCompressionFile(context, targetRoot, "empty_staged_saf_folder", forceUnregister = true)
+                null
+            }
+        } catch (t: Throwable) {
+            runCatching {
+                android.util.Log.w(TAG_STORAGE, "Failed staging SAF folder for compression: ${t.message}")
+            }
             null
         }
     }

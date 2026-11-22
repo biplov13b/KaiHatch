@@ -48,10 +48,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.biplov.kaihatch.R
 import com.biplov.kaihatch.data.FilePreviewData
 import com.biplov.kaihatch.data.StorageHelper
 import com.biplov.kaihatch.model.ArchiveSummary
@@ -134,13 +136,13 @@ fun ArchivePreviewerDialog(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "Central Directory Inspector",
+                        text = stringResource(R.string.sheet_preview_title),
                         style = MaterialTheme.typography.titleMedium,
                         fontWeight = FontWeight.ExtraBold,
                         color = MaterialTheme.colorScheme.onSurface
                     )
                     Text(
-                        text = "${summary.fileName} • ${summary.entryCount} entries indexed without extracting",
+                        text = stringResource(R.string.sheet_preview_subtitle, summary.fileName, summary.entryCount),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
@@ -151,7 +153,7 @@ fun ArchivePreviewerDialog(
                 ) {
                     Icon(
                         imageVector = Icons.Default.Close,
-                        contentDescription = "Close preview"
+                        contentDescription = stringResource(R.string.sheet_preview_close_cd)
                     )
                 }
             }
@@ -161,7 +163,7 @@ fun ArchivePreviewerDialog(
             OutlinedTextField(
                 value = searchQuery,
                 onValueChange = { searchQuery = it },
-                placeholder = { Text("Filter entries by name or extension...") },
+                placeholder = { Text(stringResource(R.string.sheet_preview_search_placeholder)) },
                 singleLine = true,
                 shape = ExpressiveShapes.SubItem,
                 colors = OutlinedTextFieldDefaults.colors(
@@ -186,6 +188,16 @@ fun ArchivePreviewerDialog(
                     key = { it.path },
                     contentType = { if (it.isDirectory) "dir" else "file" }
                 ) { entry ->
+                    val (offsetCrcText, sizeTransferText) = remember(
+                        entry.localHeaderOffset,
+                        entry.crcHex,
+                        entry.compressedSize,
+                        entry.uncompressedSize
+                    ) {
+                        val offsetStr = "Offset: 0x${entry.localHeaderOffset.toString(16).uppercase()} • ${entry.crcHex}"
+                        val sizeStr = "${StorageHelper.formatBytes(entry.compressedSize)} -> ${StorageHelper.formatBytes(entry.uncompressedSize)}"
+                        offsetStr to sizeStr
+                    }
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -250,14 +262,14 @@ fun ArchivePreviewerDialog(
                                     if (entry.isEncrypted) {
                                         Icon(
                                             imageVector = Icons.Default.Lock,
-                                            contentDescription = "Encrypted",
+                                            contentDescription = stringResource(R.string.sheet_preview_encrypted_cd),
                                             tint = tertiaryColor,
                                             modifier = Modifier.size(12.dp)
                                         )
                                     }
                                 }
                                 Text(
-                                    text = "Offset: 0x${entry.localHeaderOffset.toString(16).uppercase()} • ${entry.crcHex}",
+                                    text = offsetCrcText,
                                     style = MaterialTheme.typography.labelSmall,
                                     fontFamily = FontFamily.Monospace,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -267,7 +279,7 @@ fun ArchivePreviewerDialog(
 
                         Column(horizontalAlignment = Alignment.End) {
                             Text(
-                                text = "${StorageHelper.formatBytes(entry.compressedSize)} -> ${StorageHelper.formatBytes(entry.uncompressedSize)}",
+                                text = sizeTransferText,
                                 style = MaterialTheme.typography.labelSmall,
                                 fontFamily = FontFamily.Monospace,
                                 fontWeight = FontWeight.Bold,
@@ -296,7 +308,7 @@ fun ArchivePreviewerDialog(
                         ) {
                             Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Open in Explorer", fontWeight = FontWeight.Bold)
+                            Text(stringResource(R.string.sheet_preview_open_in_explorer), fontWeight = FontWeight.Bold)
                         }
                     }
                     if (onExtractArchive != null) {
@@ -311,7 +323,7 @@ fun ArchivePreviewerDialog(
                         ) {
                             Icon(Icons.Default.Bolt, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(modifier = Modifier.width(6.dp))
-                            Text("Unpack Now", fontWeight = FontWeight.ExtraBold)
+                            Text(stringResource(R.string.sheet_preview_unpack_now), fontWeight = FontWeight.ExtraBold)
                         }
                     }
                 }

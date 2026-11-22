@@ -15,9 +15,11 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Code
@@ -32,17 +34,20 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.FileProvider
+import com.biplov.kaihatch.R
 import com.biplov.kaihatch.data.ExtractedFileEntry
 import com.biplov.kaihatch.data.FilePreviewData
 import com.biplov.kaihatch.data.StorageHelper
@@ -113,13 +118,15 @@ fun FileViewerDialog(
                             color = MaterialTheme.colorScheme.onSurface,
                             maxLines = 1
                         )
-                        val metaText = buildString {
-                            append(StorageHelper.formatBytes(previewData.sizeBytes))
-                            append(" • ")
-                            append(previewData.mimeType)
-                            if (!crcHex.isNullOrEmpty()) {
+                        val metaText = remember(previewData.sizeBytes, previewData.mimeType, crcHex) {
+                            buildString {
+                                append(StorageHelper.formatBytes(previewData.sizeBytes))
                                 append(" • ")
-                                append(crcHex)
+                                append(previewData.mimeType)
+                                if (!crcHex.isNullOrEmpty()) {
+                                    append(" • ")
+                                    append(crcHex)
+                                }
                             }
                         }
                         Text(
@@ -134,7 +141,7 @@ fun FileViewerDialog(
                     onClick = onDismiss,
                     modifier = Modifier.testTag("close_file_viewer_button")
                 ) {
-                    Icon(Icons.Default.Close, contentDescription = "Close viewer")
+                    Icon(Icons.Default.Close, contentDescription = stringResource(R.string.sheet_viewer_close_cd))
                 }
             }
 
@@ -152,7 +159,11 @@ fun FileViewerDialog(
                         .padding(horizontal = 10.dp, vertical = 4.dp)
                 ) {
                     Text(
-                        text = if (previewData.isBinary) "HEX INSPECTOR" else "TEXT / CODE STREAM",
+                        text = if (previewData.isBinary) {
+                            stringResource(R.string.sheet_viewer_badge_hex)
+                        } else {
+                            stringResource(R.string.sheet_viewer_badge_text)
+                        },
                         style = MaterialTheme.typography.labelSmall,
                         fontWeight = FontWeight.ExtraBold,
                         color = primaryColor
@@ -178,7 +189,12 @@ fun FileViewerDialog(
                                             putExtra(Intent.EXTRA_STREAM, uri)
                                             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
                                         }
-                                        context.startActivity(Intent.createChooser(intent, "Share ${file.name}"))
+                                        context.startActivity(
+                                            Intent.createChooser(
+                                                intent,
+                                                context.getString(R.string.sheet_viewer_share_chooser, file.name)
+                                            )
+                                        )
                                     } catch (_: Exception) {}
                                 }
                             }
@@ -187,33 +203,50 @@ fun FileViewerDialog(
                     ) {
                         Icon(Icons.Default.Share, contentDescription = null, modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(6.dp))
-                        Text("Share", fontWeight = FontWeight.Bold)
+                        Text(stringResource(R.string.action_share), fontWeight = FontWeight.Bold)
                     }
                 }
             }
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            val vScroll = rememberScrollState()
             val hScroll = rememberScrollState()
-            Box(
+            val emptyFileLabel = stringResource(R.string.sheet_viewer_empty_file)
+            val lineChunks = remember(previewData.contentPreview, emptyFileLabel) {
+                val raw = previewData.contentPreview.ifEmpty { emptyFileLabel }
+                val lines = raw.split('\n')
+                if (lines.size <= 24) {
+                    listOf(raw)
+                } else {
+                    lines.chunked(24).map { it.joinToString("\n") }
+                }
+            }
+            val textColor = if (previewData.isBinary) primaryColor else MaterialTheme.colorScheme.onSurface
+            val monoTextStyle = MaterialTheme.typography.bodySmall.copy(fontSize = 11.5.sp)
+
+            LazyColumn(
                 modifier = Modifier
                     .fillMaxWidth()
                     .heightIn(min = 220.dp, max = 440.dp)
                     .clip(ExpressiveShapes.RowItem)
                     .background(innerBgColor)
                     .border(1.dp, borderColor, ExpressiveShapes.RowItem)
-                    .verticalScroll(vScroll)
-                    .horizontalScroll(hScroll)
-                    .padding(14.dp)
+                    .horizontalScroll(hScroll),
+                contentPadding = PaddingValues(14.dp)
             ) {
-                Text(
-                    text = previewData.contentPreview.ifEmpty { "Empty file (0 bytes)" },
-                    style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.5.sp),
-                    fontFamily = FontFamily.Monospace,
-                    color = if (previewData.isBinary) primaryColor else MaterialTheme.colorScheme.onSurface,
-                    lineHeight = 17.sp
-                )
+                itemsIndexed(
+                    items = lineChunks,
+                    key = { index, _ -> "preview_chunk_$index" },
+                    contentType = { _, _ -> "preview_text_chunk" }
+                ) { _, chunk ->
+                    Text(
+                        text = chunk,
+                        style = monoTextStyle,
+                        fontFamily = FontFamily.Monospace,
+                        color = textColor,
+                        lineHeight = 17.sp
+                    )
+                }
             }
         }
     }

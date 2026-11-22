@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
@@ -52,7 +53,8 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.State
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -64,13 +66,17 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.biplov.kaihatch.R
 import com.biplov.kaihatch.data.FilePreviewData
 import com.biplov.kaihatch.data.StorageHelper
+import com.biplov.kaihatch.model.ExtractionProgress
 import com.biplov.kaihatch.model.ExtractionStatus
 import com.biplov.kaihatch.model.ZipEntryInfo
 import com.biplov.kaihatch.ui.HatchViewModel
@@ -79,6 +85,7 @@ import com.biplov.kaihatch.ui.components.ExpressiveCleanHeader
 import com.biplov.kaihatch.ui.components.ExpressiveCloverIcon
 import com.biplov.kaihatch.ui.components.ExpressiveGroupPosition
 import com.biplov.kaihatch.ui.components.ExpressiveGroupedCard
+import com.biplov.kaihatch.ui.components.ExpressiveShapes
 import com.biplov.kaihatch.ui.components.FileViewerDialog
 import com.biplov.kaihatch.ui.components.groupPositionFor
 import com.biplov.kaihatch.ui.theme.JetBrainsMonoFontFamily
@@ -95,16 +102,16 @@ fun ArchiveExplorerScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
-    val exploringArchive by viewModel.exploringArchive.collectAsState()
-    val exploringSafUri by viewModel.exploringSafUri.collectAsState()
-    val exploringArchiveName by viewModel.exploringArchiveName.collectAsState()
-    val allEntries by viewModel.explorerAllEntries.collectAsState()
-    val currentFolderPath by viewModel.currentFolderPath.collectAsState()
-    val searchQuery by viewModel.searchQuery.collectAsState()
-    val selectedPaths by viewModel.selectedExplorerPaths.collectAsState()
-    val archivePassword by viewModel.archivePassword.collectAsState()
-    val extractionProgress by viewModel.extractionProgress.collectAsState()
-    val showPersistentFolderPrompt by viewModel.showPersistentFolderPrompt.collectAsState()
+    val exploringArchive by viewModel.exploringArchive.collectAsStateWithLifecycle()
+    val exploringSafUri by viewModel.exploringSafUri.collectAsStateWithLifecycle()
+    val exploringArchiveName by viewModel.exploringArchiveName.collectAsStateWithLifecycle()
+    val allEntries by viewModel.explorerAllEntries.collectAsStateWithLifecycle()
+    val currentFolderPath by viewModel.currentFolderPath.collectAsStateWithLifecycle()
+    val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
+    val selectedPaths by viewModel.selectedExplorerPaths.collectAsStateWithLifecycle()
+    val archivePassword by viewModel.archivePassword.collectAsStateWithLifecycle()
+    val extractionProgressState = viewModel.extractionProgress.collectAsStateWithLifecycle()
+    val showPersistentFolderPrompt by viewModel.showPersistentFolderPrompt.collectAsStateWithLifecycle()
 
     val primary = MaterialTheme.colorScheme.primary
     val onPrimary = MaterialTheme.colorScheme.onPrimary
@@ -138,13 +145,13 @@ fun ArchiveExplorerScreen(
             },
             title = {
                 Text(
-                    text = "Select Output Folder First",
+                    text = stringResource(R.string.dialog_output_folder_title),
                     fontWeight = FontWeight.ExtraBold
                 )
             },
             text = {
                 Text(
-                    text = "Please choose a destination folder so KaiHatch can unpack your selected files directly to your storage."
+                    text = stringResource(R.string.dialog_output_folder_explorer_body)
                 )
             },
             confirmButton = {
@@ -164,12 +171,12 @@ fun ArchiveExplorerScreen(
                         modifier = Modifier.size(16.dp)
                     )
                     Spacer(modifier = Modifier.width(6.dp))
-                    Text("Select Folder & Extract", fontWeight = FontWeight.Bold)
+                    Text(stringResource(R.string.dialog_persistent_folder_extract_confirm), fontWeight = FontWeight.Bold)
                 }
             },
             dismissButton = {
                 TextButton(onClick = { viewModel.dismissPersistentFolderPrompt() }) {
-                    Text("Cancel")
+                    Text(stringResource(R.string.action_cancel))
                 }
             }
         )
@@ -265,10 +272,15 @@ fun ArchiveExplorerScreen(
         Spacer(modifier = Modifier.height(4.dp))
 
         // Clean, Minimal Material 3 Expressive Header
+        val defaultExplorerSubtitle = stringResource(R.string.explorer_header_subtitle_default)
         ExpressiveCleanHeader(
-            badgeText = if (hasOpenedArchive) "$totalFileCount FILES" else "ARCHIVE PREVIEW",
-            title = "Explorer",
-            subtitle = exploringArchiveName.ifEmpty { "Inspect folders, preview files, and extract only what you need" }
+            badgeText = if (hasOpenedArchive) {
+                stringResource(R.string.explorer_header_files_badge, totalFileCount)
+            } else {
+                stringResource(R.string.explorer_header_badge_preview)
+            },
+            title = stringResource(R.string.explorer_header_title),
+            subtitle = exploringArchiveName.ifEmpty { defaultExplorerSubtitle }
         )
 
         Spacer(modifier = Modifier.height(10.dp))
@@ -298,13 +310,13 @@ fun ArchiveExplorerScreen(
                         )
                         Spacer(modifier = Modifier.height(14.dp))
                         Text(
-                            text = "No Archive Loaded",
+                            text = stringResource(R.string.explorer_empty_title),
                             style = MaterialTheme.typography.titleLarge,
                             color = MaterialTheme.colorScheme.onSurface
                         )
                         Spacer(modifier = Modifier.height(6.dp))
                         Text(
-                            text = "Tap the floating Open button at the bottom right to inspect and preview any ZIP, ZIP64, 7Z, APK, TAR, or TAR.GZ container without extracting the full file.",
+                            text = stringResource(R.string.explorer_empty_subtitle),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                             textAlign = TextAlign.Center
@@ -359,13 +371,13 @@ fun ArchiveExplorerScreen(
                         ) {
                             Icon(
                                 imageVector = Icons.Default.Clear,
-                                contentDescription = "Close archive",
+                                contentDescription = stringResource(R.string.explorer_close_archive_cd),
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.size(14.dp)
                             )
                             Spacer(modifier = Modifier.width(4.dp))
                             Text(
-                                text = "Close",
+                                text = stringResource(R.string.action_close),
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.ExtraBold,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -381,12 +393,16 @@ fun ArchiveExplorerScreen(
             OutlinedTextField(
                 value = searchQuery,
                 onValueChange = { viewModel.setSearchQuery(it) },
-                placeholder = { Text("Search files inside archive...", fontSize = 13.sp) },
+                placeholder = { Text(stringResource(R.string.explorer_search_placeholder), fontSize = 13.sp) },
                 leadingIcon = { Icon(imageVector = Icons.Default.Search, contentDescription = null, tint = primary) },
                 trailingIcon = {
                     if (searchQuery.isNotEmpty()) {
                         IconButton(onClick = { viewModel.setSearchQuery("") }) {
-                            Icon(imageVector = Icons.Default.Clear, contentDescription = "Clear", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Icon(
+                                imageVector = Icons.Default.Clear,
+                                contentDescription = stringResource(R.string.explorer_clear_search_cd),
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
                         }
                     }
                 },
@@ -408,91 +424,16 @@ fun ArchiveExplorerScreen(
             Spacer(modifier = Modifier.height(10.dp))
 
             // Live Partial / Full Extraction Feedback Banner in Explorer
-            val isExplorerExtracting = extractionProgress.status in listOf(
-                ExtractionStatus.ANALYZING,
-                ExtractionStatus.EXTRACTING,
-                ExtractionStatus.VERIFYING_CRC,
-                ExtractionStatus.TRUNCATING
+            ExplorerExtractionFeedbackBanner(
+                extractionProgressState = extractionProgressState,
+                primary = primary,
+                onPrimary = onPrimary,
+                primaryContainer = primaryContainer,
+                onPrimaryContainer = onPrimaryContainer,
+                secondaryContainer = secondaryContainer,
+                onSecondaryContainer = onSecondaryContainer,
+                onViewExtractedClick = { viewModel.switchTab(ScreenTab.EXTRACT) }
             )
-            if (isExplorerExtracting || extractionProgress.status == ExtractionStatus.COMPLETED) {
-                Surface(
-                    shape = RoundedCornerShape(22.dp),
-                    color = if (extractionProgress.status == ExtractionStatus.COMPLETED) primaryContainer else secondaryContainer,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("explorer_extraction_feedback_banner")
-                ) {
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 14.dp, vertical = 10.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Row(
-                            modifier = Modifier.weight(1f),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            if (isExplorerExtracting) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(18.dp),
-                                    color = primary,
-                                    strokeWidth = 2.5.dp
-                                )
-                            } else {
-                                Icon(
-                                    imageVector = Icons.Default.CheckCircle,
-                                    contentDescription = null,
-                                    tint = primary,
-                                    modifier = Modifier.size(18.dp)
-                                )
-                            }
-                            Spacer(modifier = Modifier.width(10.dp))
-                            Column {
-                                Text(
-                                    text = if (isExplorerExtracting) {
-                                        "Extracting (${(extractionProgress.overallProgressFraction * 100).toInt()}%) • ${extractionProgress.completedEntries}/${extractionProgress.totalEntries}"
-                                    } else {
-                                        "Extracted ${extractionProgress.totalEntries} item(s) (${StorageHelper.formatBytes(extractionProgress.bytesExtracted)})"
-                                    },
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.ExtraBold,
-                                    color = if (extractionProgress.status == ExtractionStatus.COMPLETED) onPrimaryContainer else onSecondaryContainer
-                                )
-                                if (isExplorerExtracting && extractionProgress.currentFileName.isNotEmpty()) {
-                                    Text(
-                                        text = extractionProgress.currentFileName,
-                                        fontSize = 10.sp,
-                                        color = onSecondaryContainer.copy(alpha = 0.8f),
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                }
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.width(8.dp))
-
-                        Surface(
-                            shape = RoundedCornerShape(50),
-                            color = primary,
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(50))
-                                .clickable { viewModel.switchTab(ScreenTab.EXTRACT) }
-                                .testTag("explorer_view_extracted_button")
-                        ) {
-                            Text(
-                                text = "View Files",
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.ExtraBold,
-                                color = onPrimary,
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
-                            )
-                        }
-                    }
-                }
-                Spacer(modifier = Modifier.height(8.dp))
-            }
 
             // Multi-select Pill Banner when items are checked
             if (selectedPaths.isNotEmpty()) {
@@ -509,7 +450,7 @@ fun ArchiveExplorerScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "${selectedPaths.size} item(s) selected for batch unpack",
+                            text = stringResource(R.string.explorer_batch_selected_count, selectedPaths.size),
                             fontSize = 12.sp,
                             fontWeight = FontWeight.ExtraBold,
                             color = onPrimaryContainer
@@ -519,7 +460,7 @@ fun ArchiveExplorerScreen(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Text(
-                                text = "Invert",
+                                text = stringResource(R.string.explorer_invert_selection),
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.ExtraBold,
                                 color = onPrimaryContainer,
@@ -528,7 +469,7 @@ fun ArchiveExplorerScreen(
                                     .testTag("explorer_invert_selection_button")
                             )
                             Text(
-                                text = "Clear",
+                                text = stringResource(R.string.explorer_clear_search_cd),
                                 fontSize = 12.sp,
                                 fontWeight = FontWeight.ExtraBold,
                                 color = primary,
@@ -554,7 +495,9 @@ fun ArchiveExplorerScreen(
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 if (searchQuery.isEmpty()) {
-                    val segments = currentFolderPath.split('/').filter { it.isNotEmpty() }
+                    val segments = remember(currentFolderPath) {
+                        currentFolderPath.split('/').filter { it.isNotEmpty() }
+                    }
                     Row(
                         modifier = Modifier.weight(1f),
                         verticalAlignment = Alignment.CenterVertically
@@ -564,10 +507,15 @@ fun ArchiveExplorerScreen(
                                 onClick = { viewModel.navigateUpFolder() },
                                 modifier = Modifier
                                     .size(34.dp)
-                                    .clip(RoundedCornerShape(50))
+                                    .clip(CircleShape)
                                     .background(MaterialTheme.colorScheme.surfaceContainerHigh)
                             ) {
-                                Icon(imageVector = Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = primary, modifier = Modifier.size(18.dp))
+                                Icon(
+                                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                    contentDescription = stringResource(R.string.action_back),
+                                    tint = primary,
+                                    modifier = Modifier.size(18.dp)
+                                )
                             }
                             Spacer(modifier = Modifier.width(8.dp))
                         }
@@ -577,14 +525,14 @@ fun ArchiveExplorerScreen(
                             horizontalArrangement = Arrangement.spacedBy(6.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            item {
+                            item(key = "crumb_root") {
                                 Surface(
-                                    shape = RoundedCornerShape(50),
+                                    shape = CircleShape,
                                     color = if (currentFolderPath.isEmpty()) primaryContainer else MaterialTheme.colorScheme.surfaceContainer,
                                     modifier = Modifier.clickable { viewModel.navigateToFolder("") }
                                 ) {
                                     Text(
-                                        text = "root",
+                                        text = stringResource(R.string.explorer_root_crumb),
                                         color = if (currentFolderPath.isEmpty()) onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
                                         fontWeight = FontWeight.ExtraBold,
                                         fontSize = 12.sp,
@@ -597,9 +545,9 @@ fun ArchiveExplorerScreen(
                             for (seg in segments) {
                                 accumulated += "$seg/"
                                 val target = accumulated
-                                item {
+                                item(key = "crumb_$target") {
                                     Surface(
-                                        shape = RoundedCornerShape(50),
+                                        shape = CircleShape,
                                         color = if (target == currentFolderPath) primaryContainer else MaterialTheme.colorScheme.surfaceContainer,
                                         modifier = Modifier.clickable { viewModel.navigateToFolder(target) }
                                     ) {
@@ -617,7 +565,7 @@ fun ArchiveExplorerScreen(
                     }
                 } else {
                     Text(
-                        text = "${displayedEntries.size} result(s)",
+                        text = stringResource(R.string.explorer_results_count, displayedEntries.size),
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Bold,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -641,13 +589,17 @@ fun ArchiveExplorerScreen(
                         ) {
                             Icon(
                                 imageVector = Icons.Default.SelectAll,
-                                contentDescription = "Select all files in folder",
+                                contentDescription = stringResource(R.string.explorer_select_all_cd),
                                 tint = if (allVisibleSelected) primary else MaterialTheme.colorScheme.onSurfaceVariant,
                                 modifier = Modifier.size(14.dp)
                             )
                             Spacer(modifier = Modifier.width(4.dp))
                             Text(
-                                text = if (allVisibleSelected) "Deselect All" else "Select All (${selectableFilesInView.size})",
+                                text = if (allVisibleSelected) {
+                                    stringResource(R.string.explorer_deselect_all)
+                                } else {
+                                    stringResource(R.string.explorer_select_all_count, selectableFilesInView.size)
+                                },
                                 fontSize = 11.sp,
                                 fontWeight = FontWeight.ExtraBold,
                                 color = if (allVisibleSelected) onPrimaryContainer else MaterialTheme.colorScheme.onSurface
@@ -678,7 +630,7 @@ fun ArchiveExplorerScreen(
                                 contentAlignment = Alignment.Center
                             ) {
                                 Text(
-                                    text = "Folder is empty",
+                                    text = stringResource(R.string.explorer_folder_empty),
                                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                                     fontSize = 13.sp,
                                     fontWeight = FontWeight.Bold
@@ -687,7 +639,11 @@ fun ArchiveExplorerScreen(
                         }
                     }
                 } else {
-                    items(displayedEntries.size) { index ->
+                    items(
+                        count = displayedEntries.size,
+                        key = { index -> displayedEntries[index].path },
+                        contentType = { index -> if (displayedEntries[index].isDirectory) "dir" else "file" }
+                    ) { index ->
                         val entry = displayedEntries[index]
                         val isChecked = selectedPaths.contains(entry.path)
                         val pos = groupPositionFor(index, displayedEntries.size)
@@ -748,7 +704,7 @@ fun ArchiveExplorerScreen(
                                     Box(
                                         modifier = Modifier
                                             .size(40.dp)
-                                            .clip(RoundedCornerShape(14.dp))
+                                            .clip(ExpressiveShapes.IconBox)
                                             .background(
                                                 if (entry.isDirectory) secondaryContainer else primaryContainer
                                             ),
@@ -776,7 +732,7 @@ fun ArchiveExplorerScreen(
                                                 Spacer(modifier = Modifier.width(6.dp))
                                                 Icon(
                                                     imageVector = Icons.Default.Lock,
-                                                    contentDescription = "Encrypted",
+                                                    contentDescription = stringResource(R.string.sheet_preview_encrypted_cd),
                                                     tint = primary,
                                                     modifier = Modifier.size(13.dp)
                                                 )
@@ -784,9 +740,16 @@ fun ArchiveExplorerScreen(
                                         }
 
                                         if (!entry.isDirectory) {
+                                            val formattedUncompressedSize = remember(entry.uncompressedSize) {
+                                                StorageHelper.formatBytes(entry.uncompressedSize)
+                                            }
                                             Row(verticalAlignment = Alignment.CenterVertically) {
                                                 Text(
-                                                    text = "${StorageHelper.formatBytes(entry.uncompressedSize)} • ${entry.ratio.toInt()}% saved",
+                                                    text = stringResource(
+                                                        R.string.explorer_entry_meta_saved,
+                                                        formattedUncompressedSize,
+                                                        entry.ratio.toInt()
+                                                    ),
                                                     fontSize = 11.sp,
                                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                                 )
@@ -800,7 +763,7 @@ fun ArchiveExplorerScreen(
                                             }
                                         } else {
                                             Text(
-                                                text = "Directory • Tap to browse",
+                                                text = stringResource(R.string.explorer_directory_subtitle),
                                                 fontSize = 11.sp,
                                                 color = MaterialTheme.colorScheme.onSurfaceVariant
                                             )
@@ -811,14 +774,14 @@ fun ArchiveExplorerScreen(
                                 if (entry.isDirectory) {
                                     Icon(
                                         imageVector = Icons.AutoMirrored.Filled.ArrowForward,
-                                        contentDescription = "Open directory",
+                                        contentDescription = stringResource(R.string.explorer_open_directory_cd),
                                         tint = primary,
                                         modifier = Modifier.size(18.dp)
                                     )
                                 } else {
                                     Row(verticalAlignment = Alignment.CenterVertically) {
                                         Surface(
-                                            shape = RoundedCornerShape(50),
+                                            shape = CircleShape,
                                             color = MaterialTheme.colorScheme.surfaceContainerHigh
                                         ) {
                                             Text(
@@ -837,7 +800,7 @@ fun ArchiveExplorerScreen(
                                         Spacer(modifier = Modifier.width(8.dp))
                                         Icon(
                                             imageVector = Icons.Default.Visibility,
-                                            contentDescription = "Preview file",
+                                            contentDescription = stringResource(R.string.explorer_preview_file_cd),
                                             tint = primary,
                                             modifier = Modifier.size(16.dp)
                                         )
@@ -855,3 +818,114 @@ fun ArchiveExplorerScreen(
         }
     }
 }
+
+@Composable
+private fun ExplorerExtractionFeedbackBanner(
+    extractionProgressState: State<ExtractionProgress>,
+    primary: Color,
+    onPrimary: Color,
+    primaryContainer: Color,
+    onPrimaryContainer: Color,
+    secondaryContainer: Color,
+    onSecondaryContainer: Color,
+    onViewExtractedClick: () -> Unit
+) {
+    val status by remember {
+        derivedStateOf { extractionProgressState.value.status }
+    }
+    val isExplorerExtracting = status == ExtractionStatus.ANALYZING ||
+        status == ExtractionStatus.EXTRACTING ||
+        status == ExtractionStatus.VERIFYING_CRC ||
+        status == ExtractionStatus.TRUNCATING
+
+    if (isExplorerExtracting || status == ExtractionStatus.COMPLETED) {
+        val extractionProgress = extractionProgressState.value
+        Surface(
+            shape = RoundedCornerShape(22.dp),
+            color = if (status == ExtractionStatus.COMPLETED) primaryContainer else secondaryContainer,
+            modifier = Modifier
+                .fillMaxWidth()
+                .testTag("explorer_extraction_feedback_banner")
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    modifier = Modifier.weight(1f),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    if (isExplorerExtracting) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(18.dp),
+                            color = primary,
+                            strokeWidth = 2.5.dp
+                        )
+                    } else {
+                        Icon(
+                            imageVector = Icons.Default.CheckCircle,
+                            contentDescription = null,
+                            tint = primary,
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(10.dp))
+                    Column {
+                        Text(
+                            text = if (isExplorerExtracting) {
+                                stringResource(
+                                    R.string.explorer_extracting_banner,
+                                    (extractionProgress.overallProgressFraction * 100).toInt(),
+                                    extractionProgress.completedEntries,
+                                    extractionProgress.totalEntries
+                                )
+                            } else {
+                                stringResource(
+                                    R.string.explorer_extracted_banner,
+                                    extractionProgress.totalEntries,
+                                    StorageHelper.formatBytes(extractionProgress.bytesExtracted)
+                                )
+                            },
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = if (status == ExtractionStatus.COMPLETED) onPrimaryContainer else onSecondaryContainer
+                        )
+                        if (isExplorerExtracting && extractionProgress.currentFileName.isNotEmpty()) {
+                            Text(
+                                text = extractionProgress.currentFileName,
+                                fontSize = 10.sp,
+                                color = onSecondaryContainer.copy(alpha = 0.8f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.width(8.dp))
+
+                Surface(
+                    shape = RoundedCornerShape(50),
+                    color = primary,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(50))
+                        .clickable(onClick = onViewExtractedClick)
+                        .testTag("explorer_view_extracted_button")
+                ) {
+                    Text(
+                        text = stringResource(R.string.explorer_view_files_button),
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = onPrimary,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                    )
+                }
+            }
+        }
+        Spacer(modifier = Modifier.height(8.dp))
+    }
+}
+

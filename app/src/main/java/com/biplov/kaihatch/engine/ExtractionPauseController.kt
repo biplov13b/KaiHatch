@@ -2,6 +2,7 @@ package com.biplov.kaihatch.engine
 
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -11,6 +12,14 @@ import kotlinx.coroutines.withTimeoutOrNull
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
+
+/**
+ * Thrown when an extraction session is cooperatively stopped at a safe boundary so the engine
+ * can finalize and restore the remaining archive in-place rather than leaving an unindexed tail.
+ */
+class CooperativeStopException(
+    message: String = "Extraction stopped at safe boundary"
+) : CancellationException(message)
 
 /**
  * Cooperative in-session Pause/Resume/Cancel controller owned by an active extraction session.
@@ -24,7 +33,8 @@ import java.util.concurrent.atomic.AtomicLong
  * 3. While [PauseState.PAUSED], coroutines suspend on a [StateFlow] gate with zero busy-waiting,
  *    zero byte consumption, zero file writes, and zero source mutations.
  * 4. Confirming Stop ([cancel]) while running, pausing, or paused immediately wakes any suspended
- *    coroutines and throws [CancellationException] without resuming extraction work.
+ *    coroutines and throws [CooperativeStopException] at a safe boundary (or [CancellationException]
+ *    if the underlying coroutine job itself was abruptly cancelled).
  */
 class ExtractionPauseController(
     val isPauseSupported: Boolean = true
@@ -63,10 +73,14 @@ class ExtractionPauseController(
     @Volatile
     var onBeforeCheckpoint: (() -> Unit)? = null
 
+    @Volatile
+    var onFinalizingSafeBoundary: (() -> Unit)? = null
+
     private val activeWorkers = AtomicInteger(1)
     private val parkedWorkers = AtomicInteger(0)
     private val pauseAcknowledgeCounter = AtomicInteger(0)
     private val resumeNotificationPending = AtomicBoolean(false)
+    private val finalizingNotified = AtomicBoolean(false)
 
     private val accumulatedPausedMs = AtomicLong(0L)
     @Volatile
@@ -103,11 +117,15 @@ class ExtractionPauseController(
     fun bindCallbacks(
         onPauseRequested: (() -> Unit)? = null,
         onPauseAcknowledged: (() -> Unit)? = null,
-        onResumed: (() -> Unit)? = null
+        onResumed: (() -> Unit)? = null,
+        onFinalizingSafeBoundary: (() -> Unit)? = null
     ) {
         this.onPauseRequested = onPauseRequested
         this.onPauseAcknowledged = onPauseAcknowledged
         this.onResumed = onResumed
+        if (onFinalizingSafeBoundary != null) {
+            this.onFinalizingSafeBoundary = onFinalizingSafeBoundary
+        }
     }
 
     /**
@@ -161,8 +179,9 @@ class ExtractionPauseController(
     }
 
     /**
-     * Cancels extraction and releases any coroutines suspended in [checkpoint] so they immediately
-     * throw [CancellationException] without resuming extraction work.
+     * Cancels extraction and releases any coroutines suspended in [checkpoint] so they reach
+     * a safe boundary and throw [CooperativeStopException] (or [CancellationException] if the
+     * parent coroutine job was cancelled).
      */
     fun cancel() {
         synchronized(stateLock) {
@@ -219,12 +238,36 @@ class ExtractionPauseController(
         }
     }
 
+    private suspend fun handleCancelledAtCheckpoint(allowAbortCurrentEntry: Boolean) {
+        currentCoroutineContext().ensureActive()
+        // Allow an immediately consecutive job.cancel() on the caller thread to propagate
+        // as standard JobCancellationException before treating this as a cooperative stop.
+        delay(10L)
+        currentCoroutineContext().ensureActive()
+        if (!allowAbortCurrentEntry) {
+            if (finalizingNotified.compareAndSet(false, true)) {
+                onFinalizingSafeBoundary?.invoke()
+            }
+            return
+        }
+        throw CooperativeStopException("Extraction stopped by user")
+    }
+
     /**
      * Cooperative safe checkpoint called by the extraction engine strictly outside atomic
      * operations (never mid-chunk write before flush, never during `ftruncate`, never during
      * `pwrite` tail-swap relocation, never mid-journal update).
+     *
+     * @param allowAbortCurrentEntry `true` when the current entry has not yet mutated the source
+     *   archive (or at an entry boundary), so stopping can immediately abort the current entry and
+     *   leave it intact in the restored archive. `false` when an in-flight large entry has already
+     *   truncated an intermediate slice or relocated a tail chunk, requiring the engine to finish
+     *   that entry to its `localHeaderOffset` boundary before restoring the remaining archive.
      */
-    suspend fun checkpoint(flushBeforePause: (() -> Unit)? = null) {
+    suspend fun checkpoint(
+        allowAbortCurrentEntry: Boolean = true,
+        flushBeforePause: (() -> Unit)? = null
+    ) {
         onBeforeCheckpoint?.invoke()
         if (fastPathRunning) {
             currentCoroutineContext().ensureActive()
@@ -232,7 +275,8 @@ class ExtractionPauseController(
         }
 
         if (_state.value == PauseState.CANCELLED) {
-            throw CancellationException("Extraction stopped by user")
+            handleCancelledAtCheckpoint(allowAbortCurrentEntry)
+            return
         }
         currentCoroutineContext().ensureActive()
 
@@ -240,23 +284,29 @@ class ExtractionPauseController(
         flushBeforePause?.invoke()
 
         var becamePaused = false
+        var alreadyCancelled = false
         synchronized(stateLock) {
             val current = _state.value
             if (current == PauseState.CANCELLED) {
-                throw CancellationException("Extraction stopped by user")
-            }
-            if (current == PauseState.RUNNING) {
+                alreadyCancelled = true
+            } else if (current == PauseState.RUNNING) {
                 return
+            } else {
+                val parked = parkedWorkers.incrementAndGet()
+                val expected = activeWorkers.get().coerceAtLeast(1)
+                if (_state.value == PauseState.PAUSING && parked >= expected) {
+                    _state.value = PauseState.PAUSED
+                    currentPauseStartMs = System.currentTimeMillis()
+                    pauseAcknowledgeCounter.incrementAndGet()
+                    resumeNotificationPending.set(true)
+                    becamePaused = true
+                }
             }
-            val parked = parkedWorkers.incrementAndGet()
-            val expected = activeWorkers.get().coerceAtLeast(1)
-            if (_state.value == PauseState.PAUSING && parked >= expected) {
-                _state.value = PauseState.PAUSED
-                currentPauseStartMs = System.currentTimeMillis()
-                pauseAcknowledgeCounter.incrementAndGet()
-                resumeNotificationPending.set(true)
-                becamePaused = true
-            }
+        }
+
+        if (alreadyCancelled) {
+            handleCancelledAtCheckpoint(allowAbortCurrentEntry)
+            return
         }
 
         try {
@@ -271,7 +321,8 @@ class ExtractionPauseController(
         }
 
         if (_state.value == PauseState.CANCELLED) {
-            throw CancellationException("Extraction stopped by user")
+            handleCancelledAtCheckpoint(allowAbortCurrentEntry)
+            return
         }
         currentCoroutineContext().ensureActive()
 

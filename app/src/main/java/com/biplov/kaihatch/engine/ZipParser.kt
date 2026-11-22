@@ -43,7 +43,7 @@ object ZipParser {
             lower.endsWith(".7z") || lower.matches(Regex(".*\\.7z\\.\\d{3}$")) -> return ArchiveFormat.SEVEN_Z
             lower.endsWith(".rar") || lower.matches(Regex(".*\\.rar\\.\\d{3}$")) -> return ArchiveFormat.RAR
             lower.endsWith(".apk") || lower.endsWith(".xapk") || lower.endsWith(".apks") || lower.endsWith(".aab") -> return ArchiveFormat.APK
-            lower.endsWith(".tar.gz") || lower.endsWith(".tgz") -> return ArchiveFormat.TAR_GZ
+            lower.endsWith(".tar.gz") || lower.endsWith(".tgz") || lower.endsWith(".gz") -> return ArchiveFormat.TAR_GZ
             lower.endsWith(".tar") -> return ArchiveFormat.TAR
             lower.matches(Regex(".*\\.zip\\.\\d{3}$")) || lower.matches(Regex(".*\\.z\\d{2}$")) -> return ArchiveFormat.SPLIT_ZIP
             lower.endsWith(".zip") || lower.endsWith(".jar") -> return ArchiveFormat.ZIP

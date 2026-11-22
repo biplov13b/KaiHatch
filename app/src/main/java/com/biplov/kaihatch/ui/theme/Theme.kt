@@ -16,15 +16,22 @@ import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
+import com.biplov.kaihatch.data.LanguageHelper
 import com.biplov.kaihatch.model.AppAccentPalette
+import com.biplov.kaihatch.model.AppLanguage
 import com.biplov.kaihatch.model.AppThemeMode
 
 // Material 3 Expressive Shape Scale
@@ -174,16 +181,36 @@ private tailrec fun Context.findActivity(): Activity? = when (this) {
     else -> null
 }
 
+private class LocalizedContextWrapper(
+    base: Context,
+    private val localizedDelegate: Context
+) : ContextWrapper(base) {
+    override fun getResources(): android.content.res.Resources = localizedDelegate.resources
+    override fun getAssets(): android.content.res.AssetManager = localizedDelegate.assets
+}
+
 @Composable
 fun KaiHatchTheme(
     themeMode: AppThemeMode = AppThemeMode.DARK,
-    accentPalette: AppAccentPalette = AppAccentPalette.EMERALD,
+    accentPalette: AppAccentPalette = AppAccentPalette.OCEAN,
+    appLanguage: AppLanguage = AppLanguage.SYSTEM,
     content: @Composable () -> Unit,
 ) {
     val isDark = resolveIsDarkTheme(themeMode, isSystemInDarkTheme())
 
     val context = LocalContext.current
-    val colorScheme = androidx.compose.runtime.remember(isDark, accentPalette, context) {
+    val baseConfig = LocalConfiguration.current
+    val systemLocaleTag = remember(baseConfig) {
+        LanguageHelper.getDeviceSystemLanguageTag(context)
+    }
+    val localizedConfiguration = remember(baseConfig, appLanguage, systemLocaleTag) {
+        LanguageHelper.createLocalizedConfiguration(baseConfig, appLanguage, context)
+    }
+    val localizedContext = remember(context, localizedConfiguration, appLanguage, systemLocaleTag) {
+        val delegate = context.createConfigurationContext(localizedConfiguration)
+        LocalizedContextWrapper(context, delegate)
+    }
+    val colorScheme = remember(isDark, accentPalette, context) {
         when {
             accentPalette == AppAccentPalette.DYNAMIC && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
                 if (isDark) {
@@ -327,20 +354,33 @@ fun KaiHatchTheme(
         }
     }
 
+    val isRtl = LanguageHelper.isRtlLanguage(appLanguage, localizedConfiguration, context) ||
+        localizedConfiguration.layoutDirection == View.LAYOUT_DIRECTION_RTL
+    val layoutDirection = if (isRtl) LayoutDirection.Rtl else LayoutDirection.Ltr
+
     val view = LocalView.current
     if (!view.isInEditMode) {
         val useDarkSystemBarIcons = shouldUseDarkSystemBarIcons(isDark, colorScheme.background)
         SideEffect {
+            val androidLayoutDir = if (isRtl) View.LAYOUT_DIRECTION_RTL else View.LAYOUT_DIRECTION_LTR
+            view.layoutDirection = androidLayoutDir
             view.context.findActivity()?.window?.let { window ->
+                window.decorView.layoutDirection = androidLayoutDir
                 applySystemBarAppearance(window, view, useDarkSystemBarIcons)
             }
         }
     }
 
-    MaterialTheme(
-        colorScheme = colorScheme,
-        typography = Typography,
-        shapes = ExpressiveShapes,
-        content = content
-    )
+    CompositionLocalProvider(
+        LocalConfiguration provides localizedConfiguration,
+        LocalContext provides localizedContext,
+        LocalLayoutDirection provides layoutDirection
+    ) {
+        MaterialTheme(
+            colorScheme = colorScheme,
+            typography = Typography,
+            shapes = ExpressiveShapes,
+            content = content
+        )
+    }
 }

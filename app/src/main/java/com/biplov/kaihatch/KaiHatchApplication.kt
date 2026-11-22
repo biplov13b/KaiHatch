@@ -1,8 +1,10 @@
 package com.biplov.kaihatch
 
 import android.app.Application
+import android.content.Context
 import android.util.Log
 import androidx.work.Configuration
+import com.biplov.kaihatch.data.LanguageHelper
 import java.util.concurrent.Executors
 
 /**
@@ -15,6 +17,10 @@ import java.util.concurrent.Executors
  * compression job is actually launched.
  */
 class KaiHatchApplication : Application(), Configuration.Provider {
+
+    override fun attachBaseContext(base: Context) {
+        super.attachBaseContext(LanguageHelper.wrapContext(base))
+    }
 
     override val workManagerConfiguration: Configuration
         get() = Configuration.Builder()

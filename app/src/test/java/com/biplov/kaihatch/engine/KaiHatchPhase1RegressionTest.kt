@@ -614,7 +614,51 @@ class KaiHatchPhase1RegressionTest {
         }
         val originalSize = archiveFile.length()
 
-        // Fault inject immediately after the first tail-swap pwrite + ftruncate (chunk 0 overwritten by tail chunk N-1)
+        // 1. Crash BEFORE slot 0 pwrite overwrite (BEFORE_TAILSWAP_PWRITE) -> slot 0 intact -> must resume cleanly with valid SHA-256
+        val preOverwriteArchive = tempFolder.newFile("crash_before_slot0_deflate.zip")
+        archiveFile.copyTo(preOverwriteArchive, overwrite = true)
+        val preOverwriteOut = tempFolder.newFolder("out_crash_before_slot0")
+        val preOverwriteInjector = RecordingFaultInjector(
+            triggerPoint = DestructivePoint.BEFORE_TAILSWAP_PWRITE,
+            triggerOnOccurrence = 1
+        )
+        KaiHatchEngine.faultInjector = preOverwriteInjector
+        val preRun = KaiHatchEngine.extractArchive(
+            archiveFile = preOverwriteArchive,
+            targetDir = preOverwriteOut,
+            isHatchMode = true,
+            context = context
+        ).toList()
+        assertEquals(ExtractionStatus.ERROR, preRun.last().status)
+
+        val preResumeState = ResumeJournalManager.loadPendingStates(context)
+            .firstOrNull { it.archiveName == preOverwriteArchive.name }
+        assertNotNull("Resume journal should exist for pre-slot-0 crash", preResumeState)
+        assertTrue(
+            "Pre-slot-0-overwrite crash must be safely resumable",
+            ResumeJournalManager.isStateSafelyResumable(preResumeState!!, context)
+        )
+        KaiHatchEngine.faultInjector = TruncationFaultInjector.NoOp
+        val preResumed = KaiHatchEngine.resumeInterruptedExtraction(
+            context = context,
+            resumeState = preResumeState
+        ).toList()
+        assertEquals(
+            "Resumed extraction after pre-slot-0 crash must complete cleanly",
+            ExtractionStatus.COMPLETED,
+            preResumed.last().status
+        )
+        val recoveredFile = File(preOverwriteOut, "big_deflated.bin")
+        assertTrue("Recovered file must exist after pre-slot-0 resume", recoveredFile.exists())
+        assertEquals(
+            "Recovered file SHA-256 must match reference after pre-slot-0 crash recovery",
+            expectedSha256,
+            sha256Hex(recoveredFile)
+        )
+
+        // 2. Crash AFTER slot 0 pwrite + ftruncate (AFTER_TAILSWAP_TRUNCATE):
+        // Part 3A: valid v2 transactional checkpoints recover cleanly via Resume to bit-exact SHA-256,
+        // while corrupted/missing checkpoints remain strictly fail-closed Unrecoverable!
         val crashInjector = RecordingFaultInjector(
             triggerPoint = DestructivePoint.AFTER_TAILSWAP_TRUNCATE,
             triggerOnOccurrence = 1
@@ -635,25 +679,63 @@ class KaiHatchPhase1RegressionTest {
         val resumeState = ResumeJournalManager.loadPendingStates(context)
             .firstOrNull { it.archiveName == archiveFile.name }
         assertNotNull("Resume journal should exist for crashed extraction", resumeState)
+        val eligibility = ResumeJournalManager.assessResumeEligibility(resumeState!!, context)
+        assertEquals(
+            "Valid v2 direct-POSIX tail-swap checkpoint must be safely Resumable in Part 3A",
+            ResumeJournalManager.ResumeEligibility.Resumable,
+            eligibility
+        )
 
-        // Attempt to resume extraction after mid-tail-swap crash
+        // Verify that corrupting the v2 checkpoint STILL halts fail-closed as Unrecoverable
+        val ckptFile = ResumeJournalManager.getDeflateTailSwapCheckpointFile(resumeState.stateFilePath)
+        val bakFile = File("${ckptFile.absolutePath}.bak")
+        val ckptBackupBytes = ckptFile.readBytes()
+        val bakBackupBytes = if (bakFile.exists()) bakFile.readBytes() else null
+        try {
+            ckptFile.writeBytes("CORRUPT_PHASE1_CHECK".toByteArray())
+            if (bakFile.exists()) bakFile.writeBytes("CORRUPT_PHASE1_BAK".toByteArray())
+
+            val corruptEligibility = ResumeJournalManager.assessResumeEligibility(resumeState, context)
+            assertTrue(
+                "Corrupted v2 tail-swap checkpoint must be fail-closed Unrecoverable (got $corruptEligibility)",
+                corruptEligibility is ResumeJournalManager.ResumeEligibility.Unrecoverable
+            )
+            KaiHatchEngine.faultInjector = TruncationFaultInjector.NoOp
+            val corruptResumed = KaiHatchEngine.resumeInterruptedExtraction(
+                context = context,
+                resumeState = resumeState
+            ).toList()
+            assertEquals(
+                "Resuming a corrupted DEFLATE tail-swap checkpoint must halt fail-closed with ERROR",
+                ExtractionStatus.ERROR,
+                corruptResumed.last().status
+            )
+            assertTrue(
+                "Error message must explain unrecoverable fail-closed state",
+                corruptResumed.last().errorMessage?.contains("UNRECOVERABLE RESUME STATE") == true
+            )
+        } finally {
+            // Restore the intact v2 checkpoint and verify transactional Resume finishes bit-exact!
+            ckptFile.writeBytes(ckptBackupBytes)
+            if (bakBackupBytes != null) bakFile.writeBytes(bakBackupBytes)
+        }
+
         KaiHatchEngine.faultInjector = TruncationFaultInjector.NoOp
         val resumed = KaiHatchEngine.resumeInterruptedExtraction(
             context = context,
-            resumeState = resumeState!!
+            resumeState = resumeState
         ).toList()
-
         assertEquals(
-            "Resumed extraction after mid-tail-swap crash must complete cleanly",
+            "Transactional Resume on intact v2 tail-swap checkpoint must complete cleanly: ${resumed.last().errorMessage}",
             ExtractionStatus.COMPLETED,
             resumed.last().status
         )
-        val extractedFile = File(outputDir, "big_deflated.bin")
-        assertTrue("Extracted file must exist after resume", extractedFile.exists())
+        val resumedFile = File(outputDir, "big_deflated.bin")
+        assertTrue("Resumed DEFLATE output must exist", resumedFile.exists())
         assertEquals(
-            "Extracted file SHA-256 must match reference after mid-tail-swap crash recovery",
+            "Resumed DEFLATE output SHA-256 must match reference bit-for-bit",
             expectedSha256,
-            sha256Hex(extractedFile)
+            sha256Hex(resumedFile)
         )
     }
 

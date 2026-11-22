@@ -241,7 +241,7 @@ object HatchCompressEngine {
             }
 
             if (!coroutineContext.isActive) {
-                targetArchiveFile.delete()
+                cleanupPartialArchiveOutputs(targetArchiveFile)
                 send(
                     CompressionProgress(
                         status = CompressionStatus.CANCELLED,
@@ -279,7 +279,19 @@ object HatchCompressEngine {
                     elapsedTimeMs = System.currentTimeMillis() - startTime
                 )
             )
+        } catch (ce: kotlinx.coroutines.CancellationException) {
+            cleanupPartialArchiveOutputs(targetArchiveFile)
+            trySend(
+                CompressionProgress(
+                    status = CompressionStatus.CANCELLED,
+                    totalFiles = fileList.size,
+                    totalInputBytes = totalInputBytes,
+                    processedInputBytes = processedBytes
+                )
+            )
+            throw ce
         } catch (e: Exception) {
+            cleanupPartialArchiveOutputs(targetArchiveFile)
             send(
                 CompressionProgress(
                     status = CompressionStatus.ERROR,
@@ -288,6 +300,30 @@ object HatchCompressEngine {
             )
         }
     }.conflate().flowOn(Dispatchers.IO)
+
+    private fun cleanupPartialArchiveOutputs(targetArchiveFile: File) {
+        runCatching {
+            if (targetArchiveFile.exists()) {
+                val bytes = targetArchiveFile.length()
+                val deleted = targetArchiveFile.delete()
+                android.util.Log.d(
+                    "KaiHatchCompress",
+                    "Cleaned up incomplete archive output: path=${targetArchiveFile.absolutePath} bytes=$bytes deleted=$deleted"
+                )
+            }
+            val parent = targetArchiveFile.parentFile
+            if (parent != null && parent.exists()) {
+                val prefix = "${targetArchiveFile.name}."
+                parent.listFiles()?.forEach { sibling ->
+                    if (sibling.name.startsWith(prefix) &&
+                        sibling.name.removePrefix(prefix).matches(Regex("\\d{3}"))
+                    ) {
+                        runCatching { sibling.delete() }
+                    }
+                }
+            }
+        }
+    }
 
     private data class CentralRecord(
         val nameBytes: ByteArray,

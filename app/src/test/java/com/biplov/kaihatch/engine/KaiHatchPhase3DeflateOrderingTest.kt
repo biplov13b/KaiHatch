@@ -275,11 +275,22 @@ class KaiHatchPhase3DeflateOrderingTest {
             .firstOrNull { it.archivePath == archiveFile.absolutePath }
         assertNotNull(resumeState)
 
-        // Attempt resume: must detect that Slot 0 was overwritten by torn pwrite and report unrecoverable error
+        // Part 3A: with valid v2 checkpoint intact, Resume is eligible while Restore remains Unrecoverable.
         KaiHatchEngine.faultInjector = TruncationFaultInjector.NoOp
+        assertTrue(
+            "Valid v2 checkpoint at torn pwrite must be safely resumable in Part 3A",
+            ResumeJournalManager.isStateSafelyResumable(resumeState!!, context)
+        )
+        assertTrue(
+            "Mutated torn pwrite state must remain Unrecoverable for Restore",
+            ResumeJournalManager.assessRestoreEligibility(resumeState, context) is ResumeJournalManager.RestoreEligibility.Unrecoverable
+        )
+
+        // Legacy fail-closed guard test (without v2 checkpoint): must detect Slot 0 overwrite and report error
+        ResumeJournalManager.clearDeflateTailSwapCheckpoint(resumeState.stateFilePath)
         val resumed = KaiHatchEngine.resumeInterruptedExtraction(
             context = context,
-            resumeState = resumeState!!
+            resumeState = resumeState
         ).toList()
 
         assertEquals(ExtractionStatus.ERROR, resumed.last().status)
@@ -323,6 +334,12 @@ class KaiHatchPhase3DeflateOrderingTest {
             .firstOrNull { it.archivePath == archiveFile.absolutePath }!!
 
         KaiHatchEngine.faultInjector = TruncationFaultInjector.NoOp
+        assertTrue(
+            "Valid v2 checkpoint after pwrite must be safely resumable in Part 3A",
+            ResumeJournalManager.isStateSafelyResumable(resumeState, context)
+        )
+        // Legacy fail-closed guard test (without v2 checkpoint): must detect Slot 0 CRC mismatch
+        ResumeJournalManager.clearDeflateTailSwapCheckpoint(resumeState.stateFilePath)
         val resumed = KaiHatchEngine.resumeInterruptedExtraction(
             context = context,
             resumeState = resumeState
@@ -367,6 +384,12 @@ class KaiHatchPhase3DeflateOrderingTest {
             .firstOrNull { it.archivePath == archiveA.absolutePath }!!
 
         KaiHatchEngine.faultInjector = TruncationFaultInjector.NoOp
+        assertTrue(
+            "Valid v2 checkpoint after mid-entry truncate must be safely resumable in Part 3A",
+            ResumeJournalManager.isStateSafelyResumable(stateA, context)
+        )
+        // Legacy fail-closed guard test (without v2 checkpoint): must report overwritten and truncated
+        ResumeJournalManager.clearDeflateTailSwapCheckpoint(stateA.stateFilePath)
         val resumedA = KaiHatchEngine.resumeInterruptedExtraction(
             context = context,
             resumeState = stateA

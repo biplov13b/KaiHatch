@@ -904,6 +904,43 @@ class ExampleRobolectricTest {
         assertNotNull(resolvedAfterExtract)
         assertEquals("A (10)_extracted", resolvedAfterExtract!!.name)
     }
+
+    @Test
+    fun `test app language support persistence and onboarding state preservation`() {
+        val app = ApplicationProvider.getApplicationContext<Application>()
+        val settingsPrefs = app.getSharedPreferences("kaihatch_settings", Context.MODE_PRIVATE)
+        val historyPrefs = app.getSharedPreferences("kaihatch_history", Context.MODE_PRIVATE)
+
+        settingsPrefs.edit().clear().commit()
+        historyPrefs.edit().clear().commit()
+
+        // 1. Fresh install defaults to System Default language and Oceanic Sky accent without marking onboarding complete
+        val freshVm = HatchViewModel(app)
+        assertEquals(com.biplov.kaihatch.model.AppLanguage.SYSTEM, freshVm.appLanguage.value)
+        assertEquals(AppAccentPalette.OCEAN, freshVm.accentPalette.value)
+        assertEquals(false, freshVm.hasCompletedOnboarding.value)
+
+        // 2. Persisting English language updates StateFlow, SharedPreferences, and wrapped Context configuration
+        freshVm.setAppLanguage(com.biplov.kaihatch.model.AppLanguage.ENGLISH)
+        assertEquals(com.biplov.kaihatch.model.AppLanguage.ENGLISH, freshVm.appLanguage.value)
+        assertEquals(
+            com.biplov.kaihatch.model.AppLanguage.ENGLISH.name,
+            settingsPrefs.getString(HatchViewModel.KEY_APP_LANGUAGE, null)
+        )
+
+        val wrappedEnContext = com.biplov.kaihatch.data.LanguageHelper.wrapContext(
+            app,
+            com.biplov.kaihatch.model.AppLanguage.ENGLISH
+        )
+        assertEquals("en", wrappedEnContext.resources.configuration.locales[0].language)
+        assertEquals("English", wrappedEnContext.getString(R.string.language_english))
+        assertEquals("System Default", wrappedEnContext.getString(R.string.language_system_default))
+
+        // 3. Restarting ViewModel preserves persisted language and recognizes returning user onboarding state
+        val restartedVm = HatchViewModel(app)
+        assertEquals(com.biplov.kaihatch.model.AppLanguage.ENGLISH, restartedVm.appLanguage.value)
+        assertEquals(true, restartedVm.hasCompletedOnboarding.value)
+    }
 }
 
 

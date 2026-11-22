@@ -3,6 +3,9 @@
     <files-path
         name="internal_files"
         path="." />
+    <files-path
+        name="app_updates"
+        path="updates/" />
     <cache-path
         name="internal_cache"
         path="." />

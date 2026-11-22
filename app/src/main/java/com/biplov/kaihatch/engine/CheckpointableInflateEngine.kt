@@ -660,28 +660,62 @@ class CheckpointableInflateEngine {
     }
 
     /**
-     * Atomically writes and `fsync`s the current decoder checkpoint to [checkpointFile].
+     * Atomically writes and `fsync`s the current decoder checkpoint to [checkpointFile],
+     * replacing the target without ever deleting it first, and mirrors the committed file to
+     * `<checkpointFile>.bak` as a validated backup slot.
      */
     fun saveCheckpointToFile(checkpointFile: File) {
         checkpointFile.parentFile?.mkdirs()
-        val tmpFile = File(checkpointFile.parentFile, "${checkpointFile.name}.tmp")
+        val tmpFile = getTempCheckpointFile(checkpointFile)
         FileOutputStream(tmpFile).use { fos ->
-            BufferedOutputStream(fos, 36 * 1024).use { bos ->
-                writeCheckpointToStream(bos)
+            val bos = BufferedOutputStream(fos, 36 * 1024)
+            writeCheckpointToStream(bos) {
                 bos.flush()
+                fos.flush()
+                persistenceFaultHook?.invoke(PersistenceFaultStage.AFTER_TMP_PARTIAL_WRITE, checkpointFile, tmpFile)
             }
+            bos.flush()
+            fos.flush()
             try {
                 fos.fd.sync()
             } catch (_: Throwable) {
             }
         }
-        if (checkpointFile.exists()) checkpointFile.delete()
-        if (!tmpFile.renameTo(checkpointFile)) {
-            throw InvalidCheckpointException("Failed to rename temporary checkpoint file to ${checkpointFile.absolutePath}")
+        persistenceFaultHook?.invoke(PersistenceFaultStage.AFTER_TMP_SYNC_BEFORE_REPLACE, checkpointFile, tmpFile)
+        if (!atomicReplaceCheckpointFile(tmpFile, checkpointFile)) {
+            throw InvalidCheckpointException("Failed to atomically replace checkpoint file at ${checkpointFile.absolutePath}")
+        }
+        persistenceFaultHook?.invoke(PersistenceFaultStage.AFTER_PRIMARY_REPLACE_BEFORE_BACKUP, checkpointFile, null)
+        try {
+            mirrorCommittedCheckpointToBackup(checkpointFile)
+        } catch (t: Throwable) {
+            if (persistenceFaultHook != null) throw t
         }
     }
 
-    private fun writeCheckpointToStream(rawOut: OutputStream) {
+    private fun mirrorCommittedCheckpointToBackup(checkpointFile: File) {
+        val bakFile = getBackupCheckpointFile(checkpointFile)
+        val bakTmpFile = getBackupTempCheckpointFile(checkpointFile)
+        FileInputStream(checkpointFile).use { fis ->
+            FileOutputStream(bakTmpFile).use { fos ->
+                val buf = ByteArray(32 * 1024)
+                while (true) {
+                    val r = fis.read(buf)
+                    if (r <= 0) break
+                    fos.write(buf, 0, r)
+                }
+                fos.flush()
+                persistenceFaultHook?.invoke(PersistenceFaultStage.AFTER_BACKUP_PARTIAL_WRITE, checkpointFile, bakTmpFile)
+                try {
+                    fos.fd.sync()
+                } catch (_: Throwable) {
+                }
+            }
+        }
+        atomicReplaceCheckpointFile(bakTmpFile, bakFile)
+    }
+
+    private fun writeCheckpointToStream(rawOut: OutputStream, beforeFooterHook: (() -> Unit)? = null) {
         val crc = CRC32()
         val cos = CheckedOutputStream(rawOut, crc)
         val dos = DataOutputStream(cos)
@@ -710,6 +744,7 @@ class CheckpointableInflateEngine {
         dos.writeInt(windowFilled)
         dos.write(window)
         dos.flush()
+        beforeFooterHook?.invoke()
 
         // Write 8-byte CRC32 footer directly to rawOut
         val footerDos = DataOutputStream(rawOut)
@@ -747,21 +782,39 @@ class CheckpointableInflateEngine {
     }
 
     /**
-     * Restores the complete decoder state from [checkpointFile], optionally verifying that
-     * [committedOutputFile] exists and contains at least `outputBytesWritten` bytes.
+     * Restores the complete decoder state from [checkpointFile] (falling back to CRC-validated
+     * `.bak` or `.tmp` copies if the primary file is missing or corrupted), optionally verifying
+     * that [committedOutputFile] exists and contains at least `outputBytesWritten` bytes.
      *
-     * @throws InvalidCheckpointException if the file is missing, corrupted, or inconsistent with output.
+     * @throws InvalidCheckpointException if no valid checkpoint exists or output is inconsistent.
      */
     fun restoreFromCheckpointFile(checkpointFile: File, committedOutputFile: File? = null) {
-        if (!checkpointFile.exists() || !checkpointFile.isFile) {
-            throw InvalidCheckpointException("Checkpoint file does not exist: ${checkpointFile.absolutePath}")
+        val candidates = listOf(
+            checkpointFile,
+            getBackupCheckpointFile(checkpointFile),
+            getTempCheckpointFile(checkpointFile)
+        )
+        var lastError: InvalidCheckpointException? = null
+        var restored = false
+        for (candidate in candidates) {
+            if (!candidate.exists() || !candidate.isFile) continue
+            val len = candidate.length()
+            if (len < MIN_CHECKPOINT_BYTES || len > MAX_CHECKPOINT_BYTES) {
+                lastError = InvalidCheckpointException("Invalid checkpoint file length: $len bytes (${candidate.name})")
+                continue
+            }
+            try {
+                val bytes = candidate.readBytes()
+                restoreFromCheckpointBytes(bytes)
+                restored = true
+                break
+            } catch (e: InvalidCheckpointException) {
+                lastError = e
+            }
         }
-        val len = checkpointFile.length()
-        if (len < MIN_CHECKPOINT_BYTES || len > MAX_CHECKPOINT_BYTES) {
-            throw InvalidCheckpointException("Invalid checkpoint file length: $len bytes")
+        if (!restored) {
+            throw lastError ?: InvalidCheckpointException("Checkpoint file does not exist: ${checkpointFile.absolutePath}")
         }
-        val bytes = checkpointFile.readBytes()
-        restoreFromCheckpointBytes(bytes)
 
         if (committedOutputFile != null) {
             if (!committedOutputFile.exists()) {
@@ -1037,7 +1090,89 @@ class CheckpointableInflateEngine {
         return tableSize - 1
     }
 
+    enum class PersistenceFaultStage {
+        AFTER_TMP_PARTIAL_WRITE,
+        AFTER_TMP_SYNC_BEFORE_REPLACE,
+        AFTER_PRIMARY_REPLACE_BEFORE_BACKUP,
+        AFTER_BACKUP_PARTIAL_WRITE
+    }
+
     companion object {
+        @Volatile
+        internal var persistenceFaultHook: ((stage: PersistenceFaultStage, targetFile: File, stagingFile: File?) -> Unit)? = null
+
+        internal fun getBackupCheckpointFile(checkpointFile: File): File =
+            File(checkpointFile.parentFile, "${checkpointFile.name}.bak")
+
+        internal fun getTempCheckpointFile(checkpointFile: File): File =
+            File(checkpointFile.parentFile, "${checkpointFile.name}.tmp")
+
+        internal fun getBackupTempCheckpointFile(checkpointFile: File): File =
+            File(checkpointFile.parentFile, "${checkpointFile.name}.bak.tmp")
+
+        fun deleteCheckpointFiles(checkpointFile: File) {
+            val targets = listOf(
+                checkpointFile,
+                getBackupCheckpointFile(checkpointFile),
+                getTempCheckpointFile(checkpointFile),
+                getBackupTempCheckpointFile(checkpointFile)
+            )
+            for (f in targets) {
+                try {
+                    if (f.exists()) f.delete()
+                } catch (_: Throwable) {
+                }
+            }
+        }
+
+        private fun syncParentDirectory(dir: File?) {
+            if (dir == null || !dir.exists() || !dir.isDirectory) return
+            try {
+                java.nio.channels.FileChannel.open(
+                    dir.toPath(),
+                    java.nio.file.StandardOpenOption.READ
+                ).use { ch ->
+                    ch.force(true)
+                }
+            } catch (_: Throwable) {
+            }
+        }
+
+        /**
+         * Atomically replaces [targetFile] with [tmpFile] without ever calling `targetFile.delete()`.
+         * Pure Kotlin/JVM compatible with Android API 24+ (catching `LinkageError` on API < 26).
+         */
+        private fun atomicReplaceCheckpointFile(tmpFile: File, targetFile: File): Boolean {
+            if (!tmpFile.exists()) return false
+            try {
+                java.nio.file.Files.move(
+                    tmpFile.toPath(),
+                    targetFile.toPath(),
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                    java.nio.file.StandardCopyOption.ATOMIC_MOVE
+                )
+                syncParentDirectory(targetFile.parentFile)
+                return true
+            } catch (_: Throwable) {
+                try {
+                    java.nio.file.Files.move(
+                        tmpFile.toPath(),
+                        targetFile.toPath(),
+                        java.nio.file.StandardCopyOption.REPLACE_EXISTING
+                    )
+                    syncParentDirectory(targetFile.parentFile)
+                    return true
+                } catch (_: Throwable) {
+                }
+            }
+            // Direct POSIX rename(2) without deleting targetFile first
+            if (tmpFile.renameTo(targetFile)) {
+                syncParentDirectory(targetFile.parentFile)
+                return true
+            }
+            return false
+        }
+
         const val CHECKPOINT_MAGIC = 0x4B484446 // "KHDF"
         const val CHECKPOINT_VERSION = 1
 

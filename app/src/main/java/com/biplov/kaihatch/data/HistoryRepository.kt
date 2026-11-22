@@ -3,15 +3,20 @@ package com.biplov.kaihatch.data
 import android.content.Context
 import android.content.SharedPreferences
 import com.biplov.kaihatch.model.OperationRecord
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import org.json.JSONArray
 import org.json.JSONObject
 
 class HistoryRepository(context: Context) {
 
     private val prefs: SharedPreferences = context.getSharedPreferences("kaihatch_history", Context.MODE_PRIVATE)
+    private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private val _records = MutableStateFlow<List<OperationRecord>>(emptyList())
     val records: StateFlow<List<OperationRecord>> = _records.asStateFlow()
@@ -20,7 +25,9 @@ class HistoryRepository(context: Context) {
     val totalReclaimedBytes: StateFlow<Long> = _totalReclaimedBytes.asStateFlow()
 
     init {
-        loadHistory()
+        ioScope.launch {
+            loadHistory()
+        }
     }
 
     private fun loadHistory() {
@@ -55,8 +62,11 @@ class HistoryRepository(context: Context) {
             }
         }
 
-        _records.value = list.sortedByDescending { it.timestamp }
-        _totalReclaimedBytes.value = totalReclaimed
+        val sorted = list.sortedByDescending { it.timestamp }
+        if (_records.value.isEmpty()) {
+            _records.value = sorted
+            _totalReclaimedBytes.value = totalReclaimed
+        }
     }
 
     fun addRecord(record: OperationRecord) {
@@ -65,13 +75,16 @@ class HistoryRepository(context: Context) {
         if (current.size > 100) {
             current.removeAt(current.size - 1)
         }
-        _records.value = current
+        val snapshot = current.toList()
+        _records.value = snapshot
 
         if (record.type == "HATCH_EXTRACT" && record.success) {
             _totalReclaimedBytes.value += record.reclaimedOrSavedSize
         }
 
-        saveToPrefs(current)
+        ioScope.launch {
+            saveToPrefs(snapshot)
+        }
     }
 
     fun clearHistory() {

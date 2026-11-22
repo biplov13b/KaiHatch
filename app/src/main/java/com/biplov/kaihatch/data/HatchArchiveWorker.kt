@@ -11,6 +11,7 @@ import androidx.work.OutOfQuotaPolicy
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
+import com.biplov.kaihatch.R
 import com.biplov.kaihatch.engine.ExtractionPauseController
 import com.biplov.kaihatch.engine.KaiHatchEngine
 import com.biplov.kaihatch.model.CompressionProgress
@@ -83,6 +84,17 @@ object ArchiveJobRunner {
         if (!isExtractionActive()) return false
         val controller = activePauseController ?: return false
         return controller.resume()
+    }
+
+    /**
+     * Signals the active [ExtractionPauseController] to stop at the next safe boundary and
+     * finalize/restore the remaining archive in-place without killing [activeExtractJob] mid-write.
+     */
+    fun requestCooperativeStop(): Boolean {
+        if (!isExtractionActive()) return false
+        val controller = activePauseController ?: return false
+        controller.cancel()
+        return true
     }
 
     fun launchExtractionJob(
@@ -197,10 +209,13 @@ class HatchArchiveWorker(
 ) : CoroutineWorker(appContext, params) {
 
     override suspend fun getForegroundInfo(): ForegroundInfo {
-        val title = inputData.getString(ArchiveJobRunner.KEY_TASK_TITLE) ?: "KaiHatch Archive Engine"
-        val subtitle = inputData.getString(ArchiveJobRunner.KEY_TASK_SUBTITLE) ?: "Processing archive..."
+        val locContext = LanguageHelper.wrapContext(applicationContext)
+        val title = inputData.getString(ArchiveJobRunner.KEY_TASK_TITLE)
+            ?: locContext.getString(R.string.notif_worker_default_title)
+        val subtitle = inputData.getString(ArchiveJobRunner.KEY_TASK_SUBTITLE)
+            ?: locContext.getString(R.string.notif_default_subtitle)
         val notification = HatchNotificationHelper.buildProgressNotification(
-            context = applicationContext,
+            context = locContext,
             title = title,
             subtitle = subtitle,
             detailBigText = subtitle,
@@ -236,9 +251,32 @@ class HatchArchiveWorker(
         }
 
         // Process was restarted by the OS after being killed mid-extraction:
-        // Check for any crash-safe .hatchstate journal and auto-resume it!
+        // Never automatically restart a destructive Hatch Mode operation in the background if the
+        // source archive may already have been partially truncated or requires user confirmation/password.
+        // Instead, preserve the crash-safe .hatchstate journal on disk so HatchViewModel surfaces the
+        // explicit recovery banner to the user on next launch.
         val pendingJournals = ResumeJournalManager.loadPendingStates(applicationContext)
         val latestJournal = pendingJournals.firstOrNull() ?: return Result.success()
+
+        val eligibility = ResumeJournalManager.assessResumeEligibility(latestJournal, applicationContext)
+        val archivePartiallyTruncated = latestJournal.bytesReclaimedSoFar > 0L ||
+                (latestJournal.originalArchiveBytes > 0L && latestJournal.currentArchiveBytes < latestJournal.originalArchiveBytes)
+        val requiresPassword = latestJournal.remainingEntries.any { it.isEncrypted } && latestJournal.password.isNullOrEmpty()
+
+        val hasPendingRestoration = latestJournal.hasPendingRestoration ||
+                ResumeJournalManager.hasPendingRestorationCheckpoint(latestJournal.stateFilePath)
+        val hasActiveTailSwapRecovery =
+                ResumeJournalManager.loadTailSwapGuard(latestJournal.stateFilePath) != null ||
+                ResumeJournalManager.loadDeflateTailSwapCheckpoint(latestJournal.stateFilePath) != null
+
+        if (eligibility is ResumeJournalManager.ResumeEligibility.Unrecoverable ||
+            archivePartiallyTruncated ||
+            hasPendingRestoration ||
+            hasActiveTailSwapRecovery ||
+            requiresPassword
+        ) {
+            return Result.success()
+        }
 
         val pauseController = ExtractionPauseController()
         ArchiveJobRunner.updateExtractionProgress(
@@ -250,6 +288,7 @@ class HatchArchiveWorker(
         )
 
         return try {
+            var encounteredError = false
             KaiHatchEngine.resumeInterruptedExtraction(
                 context = applicationContext,
                 resumeState = latestJournal,
@@ -257,18 +296,30 @@ class HatchArchiveWorker(
                 pauseController = pauseController
             ).collect { progress ->
                 ArchiveJobRunner.updateExtractionProgress(progress)
+                if (progress.status == ExtractionStatus.ERROR) {
+                    encounteredError = true
+                }
+                val locContext = LanguageHelper.wrapContext(applicationContext)
                 when (progress.status) {
                     ExtractionStatus.EXTRACTING, ExtractionStatus.TRUNCATING -> {
-                        val countLabel = if (progress.totalEntries == 1) "1 file" else "${progress.totalEntries} files"
+                        val countLabel = if (progress.totalEntries == 1) {
+                            locContext.getString(R.string.notif_count_one_file)
+                        } else {
+                            locContext.getString(R.string.notif_count_many_files, progress.totalEntries)
+                        }
                         val remainingBytes = (progress.totalUncompressedBytes - progress.bytesExtracted).coerceAtLeast(0L)
                         val speedText = if (progress.bytesPerSecond > 0L) {
                             "${StorageHelper.formatBytes(progress.bytesPerSecond)}/s"
                         } else ""
                         HatchNotificationHelper.showLiveProgressNotification(
-                            context = applicationContext,
-                            title = "Extracting $countLabel",
+                            context = locContext,
+                            title = locContext.getString(R.string.notif_extracting_title, countLabel),
                             subtitle = progress.currentFileName.substringAfterLast('/').ifEmpty { latestJournal.archiveName },
-                            detailBigText = HatchNotificationHelper.formatRemainingLine(remainingBytes, progress.bytesPerSecond),
+                            detailBigText = HatchNotificationHelper.formatRemainingLine(
+                                remainingBytes = remainingBytes,
+                                bytesPerSecond = progress.bytesPerSecond,
+                                context = locContext
+                            ),
                             progressFraction = progress.overallProgressFraction,
                             speedText = speedText
                         )
@@ -276,33 +327,72 @@ class HatchArchiveWorker(
                     ExtractionStatus.PAUSING -> {
                         val remainingBytes = (progress.totalUncompressedBytes - progress.bytesExtracted).coerceAtLeast(0L)
                         HatchNotificationHelper.showLiveProgressNotification(
-                            context = applicationContext,
-                            title = "Pausing extraction...",
+                            context = locContext,
+                            title = locContext.getString(R.string.notif_pausing_title),
                             subtitle = progress.currentFileName.substringAfterLast('/').ifEmpty { latestJournal.archiveName },
-                            detailBigText = "Finishing current atomic step • ${StorageHelper.formatBytes(remainingBytes)} remaining",
+                            detailBigText = locContext.getString(
+                                R.string.notif_pausing_detail,
+                                StorageHelper.formatBytes(remainingBytes)
+                            ),
                             progressFraction = progress.overallProgressFraction,
-                            speedText = "PAUSING",
+                            speedText = locContext.getString(R.string.extract_hud_prefix_pausing),
                             forceUpdate = true
                         )
                     }
                     ExtractionStatus.PAUSED -> {
                         val remainingBytes = (progress.totalUncompressedBytes - progress.bytesExtracted).coerceAtLeast(0L)
                         HatchNotificationHelper.showLiveProgressNotification(
-                            context = applicationContext,
-                            title = "Extraction paused",
+                            context = locContext,
+                            title = locContext.getString(R.string.notif_paused_title),
                             subtitle = progress.currentFileName.substringAfterLast('/').ifEmpty { latestJournal.archiveName },
-                            detailBigText = "Paused at ${(progress.overallProgressFraction * 100f).toInt()}% • ${StorageHelper.formatBytes(remainingBytes)} remaining",
+                            detailBigText = locContext.getString(
+                                R.string.notif_paused_detail,
+                                (progress.overallProgressFraction * 100f).toInt(),
+                                StorageHelper.formatBytes(remainingBytes)
+                            ),
                             progressFraction = progress.overallProgressFraction,
-                            speedText = "PAUSED",
+                            speedText = locContext.getString(R.string.extract_hud_prefix_paused),
                             forceUpdate = true
                         )
+                    }
+                    ExtractionStatus.COMPLETED -> {
+                        val doneCountText = if (progress.totalEntries == 1) {
+                            locContext.getString(R.string.notif_count_one_file)
+                        } else {
+                            locContext.getString(R.string.notif_count_many_files, progress.totalEntries)
+                        }
+                        val summaryMsg = "${latestJournal.archiveName} • ${StorageHelper.formatBytes(progress.bytesExtracted)}"
+                        HatchNotificationHelper.showCompletionNotification(
+                            context = locContext,
+                            title = locContext.getString(R.string.notif_extracted_title, doneCountText),
+                            message = summaryMsg
+                        )
+                    }
+                    ExtractionStatus.ERROR -> {
+                        val errSummary = progress.errorMessage?.takeIf { it.isNotBlank() } ?: latestJournal.archiveName
+                        HatchNotificationHelper.showErrorNotification(
+                            context = locContext,
+                            title = locContext.getString(R.string.extract_error_title),
+                            message = errSummary
+                        )
+                    }
+                    ExtractionStatus.CANCELLED -> {
+                        HatchNotificationHelper.cancelProgressNotification(locContext)
+                        HatchNotificationHelper.cancelCompletionNotification(locContext)
                     }
                     else -> {}
                 }
             }
-            Result.success()
-        } catch (_: Throwable) {
-            Result.retry()
+            if (encounteredError) Result.failure() else Result.success()
+        } catch (t: Throwable) {
+            val locContext = LanguageHelper.wrapContext(applicationContext)
+            HatchNotificationHelper.showErrorNotification(
+                context = locContext,
+                title = locContext.getString(R.string.extract_error_title),
+                message = t.localizedMessage ?: t.javaClass.simpleName
+            )
+            // Never loop with Result.retry() on an interrupted Hatch Mode archive
+            Result.failure()
         }
     }
 }

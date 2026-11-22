@@ -1,11 +1,20 @@
 package com.biplov.kaihatch.ui.components
 
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.SpringSpec
+import androidx.compose.animation.core.TweenSpec
+import androidx.compose.animation.core.VisibilityThreshold
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandHorizontally
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkHorizontally
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -47,6 +56,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.biplov.kaihatch.ui.theme.JetBrainsMonoFontFamily
@@ -55,9 +65,85 @@ import kotlin.math.cos
 import kotlin.math.sin
 
 /**
+ * Centralized Material 3 Expressive & Essentials-inspired motion specifications.
+ * Pre-allocated springs and transitions ensure consistent velocity-preserving physics
+ * across tabs, bottom dock, Settings, dialogs, and expandable sections without
+ * per-frame spec allocations.
+ */
+object ExpressiveMotion {
+    const val AccordionSpringStiffness = 650f
+
+    val AccordionSizeSpring: SpringSpec<IntSize> = spring(
+        dampingRatio = Spring.DampingRatioNoBouncy,
+        stiffness = AccordionSpringStiffness,
+        visibilityThreshold = IntSize.VisibilityThreshold
+    )
+
+    val AccordionFloatSpring: SpringSpec<Float> = spring(
+        dampingRatio = Spring.DampingRatioNoBouncy,
+        stiffness = AccordionSpringStiffness
+    )
+
+    val AccordionDpSpring: SpringSpec<Dp> = spring(
+        dampingRatio = Spring.DampingRatioNoBouncy,
+        stiffness = AccordionSpringStiffness,
+        visibilityThreshold = Dp.VisibilityThreshold
+    )
+
+    val AccordionColorSpring: SpringSpec<Color> = spring(
+        dampingRatio = Spring.DampingRatioNoBouncy,
+        stiffness = AccordionSpringStiffness
+    )
+
+    val AccordionEnterTransition: EnterTransition = expandVertically(
+        animationSpec = AccordionSizeSpring,
+        expandFrom = Alignment.Top
+    )
+
+    val AccordionExitTransition: ExitTransition = shrinkVertically(
+        animationSpec = AccordionSizeSpring,
+        shrinkTowards = Alignment.Top
+    )
+
+    val AccordionHorizontalEnterTransition: EnterTransition = expandHorizontally(
+        animationSpec = AccordionSizeSpring
+    )
+
+    val AccordionHorizontalExitTransition: ExitTransition = shrinkHorizontally(
+        animationSpec = AccordionSizeSpring
+    )
+
+    val DockPagerSpring: SpringSpec<Float> = spring(
+        dampingRatio = Spring.DampingRatioNoBouncy,
+        stiffness = Spring.StiffnessMediumLow
+    )
+
+    val TabTintSpring: SpringSpec<Color> = spring(
+        dampingRatio = Spring.DampingRatioNoBouncy,
+        stiffness = Spring.StiffnessMedium
+    )
+
+    val ProgressSpring: SpringSpec<Float> = spring(
+        dampingRatio = Spring.DampingRatioNoBouncy,
+        stiffness = Spring.StiffnessMediumLow
+    )
+
+    val OverlayTransitionSpec: TweenSpec<Float> = tween(
+        durationMillis = 220,
+        easing = FastOutSlowInEasing
+    )
+
+    val ScrimFadeSpec: TweenSpec<Float> = tween(
+        durationMillis = 200,
+        easing = FastOutSlowInEasing
+    )
+}
+
+/**
  * Shared pre-allocated shapes to eliminate per-composition RoundedCornerShape allocations.
  */
 object ExpressiveShapes {
+    val HeroCard = RoundedCornerShape(30.dp)
     val CardOuter = RoundedCornerShape(28.dp)
     val CardMedium = RoundedCornerShape(24.dp)
     val CardInner = RoundedCornerShape(20.dp)
@@ -65,6 +151,7 @@ object ExpressiveShapes {
     val SubItem = RoundedCornerShape(16.dp)
     val IconBox = RoundedCornerShape(14.dp)
     val Small = RoundedCornerShape(12.dp)
+    val IconBadge = RoundedCornerShape(10.dp)
     val Badge = RoundedCornerShape(8.dp)
 
     // Pre-allocated Grouped Card Shapes (zero Dp-animation recomposition overhead during scroll)
@@ -436,9 +523,9 @@ fun ExpressiveWaveProgressIndicator(
     @Suppress("UNUSED_PARAMETER") isWaveAnimated: Boolean = false,
     height: Dp = 14.dp
 ) {
-    val animatedProgress by animateFloatAsState(
+    val animatedProgressState = animateFloatAsState(
         targetValue = progress.coerceIn(0f, 1f),
-        animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing),
+        animationSpec = ExpressiveMotion.ProgressSpring,
         label = "progress_bar"
     )
 
@@ -448,12 +535,13 @@ fun ExpressiveWaveProgressIndicator(
             .height(height)
             .clip(CircleShape)
     ) {
+        val currentProgress = animatedProgressState.value
         val w = size.width
         val h = size.height
         val radius = CornerRadius(h / 2f, h / 2f)
         val gapPx = 4.dp.toPx()
 
-        val activeWidth = (w * animatedProgress).coerceIn(0f, w)
+        val activeWidth = (w * currentProgress).coerceIn(0f, w)
         if (activeWidth > 1f) {
             drawRoundRect(
                 color = activeColor,

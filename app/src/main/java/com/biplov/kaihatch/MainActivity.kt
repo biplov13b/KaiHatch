@@ -92,7 +92,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -129,11 +128,13 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.biplov.kaihatch.model.CompressionStatus
 import com.biplov.kaihatch.model.ExtractionStatus
 import com.biplov.kaihatch.ui.HatchViewModel
 import com.biplov.kaihatch.ui.ScreenTab
+import com.biplov.kaihatch.ui.components.ExpressiveMotion
 import com.biplov.kaihatch.ui.components.HapticUtil
 import com.biplov.kaihatch.ui.screens.ArchiveExplorerScreen
 import com.biplov.kaihatch.ui.screens.CompressScreen
@@ -142,7 +143,16 @@ import com.biplov.kaihatch.ui.screens.HistoryScreen
 import com.biplov.kaihatch.ui.screens.OnboardingScreen
 import com.biplov.kaihatch.ui.screens.SettingsScreen
 import com.biplov.kaihatch.ui.screens.SpaceLabScreen
+import androidx.annotation.StringRes
+import androidx.compose.ui.res.stringResource
+import android.widget.Toast
+import com.biplov.kaihatch.data.LanguageHelper
+import com.biplov.kaihatch.data.StorageHelper
+import com.biplov.kaihatch.ui.components.AppUpdateDialog
 import com.biplov.kaihatch.ui.theme.KaiHatchTheme
+import com.biplov.kaihatch.updater.AppUpdateManager
+import com.biplov.kaihatch.updater.UpdateNotificationHelper
+import com.biplov.kaihatch.updater.UpdateUiEvent
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -151,6 +161,7 @@ import kotlin.math.roundToInt
 private data class DockTabSpec(
     val tab: ScreenTab,
     val title: String,
+    @StringRes val titleResId: Int,
     val testTag: String,
     val selectedIcon: ImageVector,
     val unselectedIcon: ImageVector
@@ -166,6 +177,7 @@ private val PagerDockTabs = listOf(
     DockTabSpec(
         tab = ScreenTab.EXTRACT,
         title = "Unpack",
+        titleResId = R.string.nav_unpack,
         testTag = "nav_extract",
         selectedIcon = Icons.Filled.Unarchive,
         unselectedIcon = Icons.Outlined.Unarchive
@@ -173,6 +185,7 @@ private val PagerDockTabs = listOf(
     DockTabSpec(
         tab = ScreenTab.COMPRESS,
         title = "Pack",
+        titleResId = R.string.nav_pack,
         testTag = "nav_compress",
         selectedIcon = Icons.Filled.Archive,
         unselectedIcon = Icons.Outlined.Archive
@@ -180,6 +193,7 @@ private val PagerDockTabs = listOf(
     DockTabSpec(
         tab = ScreenTab.EXPLORER,
         title = "Browse",
+        titleResId = R.string.nav_browse,
         testTag = "nav_explorer",
         selectedIcon = Icons.Filled.FolderOpen,
         unselectedIcon = Icons.Outlined.FolderOpen
@@ -187,6 +201,7 @@ private val PagerDockTabs = listOf(
     DockTabSpec(
         tab = ScreenTab.HISTORY,
         title = "History",
+        titleResId = R.string.nav_history,
         testTag = "nav_history",
         selectedIcon = Icons.Filled.History,
         unselectedIcon = Icons.Outlined.History
@@ -194,16 +209,16 @@ private val PagerDockTabs = listOf(
 )
 
 private val ActionTileShape = RoundedCornerShape(22.dp)
-private val DockPillSpring = spring<Float>(
-    dampingRatio = Spring.DampingRatioNoBouncy,
-    stiffness = Spring.StiffnessMediumLow
-)
-private val TabIconColorSpring = spring<Color>(stiffness = Spring.StiffnessMedium)
 
 class MainActivity : ComponentActivity() {
 
     private var pendingIncomingUri by mutableStateOf<Uri?>(null)
     private var pendingShortcutAction by mutableStateOf<String?>(null)
+    private var pendingUpdateIntent by mutableStateOf<Intent?>(null)
+
+    override fun attachBaseContext(newBase: Context) {
+        super.attachBaseContext(LanguageHelper.wrapContext(newBase))
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
@@ -214,19 +229,32 @@ class MainActivity : ComponentActivity() {
 
         extractUriFromIntent(intent)?.let { pendingIncomingUri = it }
         extractShortcutActionFromIntent(intent)?.let { pendingShortcutAction = it }
+        extractUpdateIntent(intent)?.let { pendingUpdateIntent = it }
 
         setContent {
             val hatchViewModel: HatchViewModel = viewModel()
-            val themeMode by hatchViewModel.themeMode.collectAsState()
-            val accentPalette by hatchViewModel.accentPalette.collectAsState()
+            val themeMode by hatchViewModel.themeMode.collectAsStateWithLifecycle()
+            val accentPalette by hatchViewModel.accentPalette.collectAsStateWithLifecycle()
+            val appLanguage by hatchViewModel.appLanguage.collectAsStateWithLifecycle()
+
+            val currentConfig = androidx.compose.ui.platform.LocalConfiguration.current
+            LaunchedEffect(currentConfig) {
+                hatchViewModel.refreshPermissionsState()
+            }
 
             KaiHatchTheme(
                 themeMode = themeMode,
-                accentPalette = accentPalette
+                accentPalette = accentPalette,
+                appLanguage = appLanguage
             ) {
                 val incoming = pendingIncomingUri
-                LaunchedEffect(incoming) {
-                    if (incoming != null) {
+                val hasCompletedOnboarding by hatchViewModel.hasCompletedOnboarding.collectAsStateWithLifecycle()
+                LaunchedEffect(incoming, hasCompletedOnboarding) {
+                    if (incoming != null && hasCompletedOnboarding) {
+                        StorageHelper.takePersistablePermission(this@MainActivity, incoming)
+
+                        hatchViewModel.closeSettings()
+                        hatchViewModel.switchTab(ScreenTab.EXTRACT)
                         hatchViewModel.selectSafUriZeroCopy(incoming)
                         pendingIncomingUri = null
                     }
@@ -254,7 +282,26 @@ class MainActivity : ComponentActivity() {
                         pendingShortcutAction = null
                     }
                 }
-                KaiHatchApp(viewModel = hatchViewModel)
+                val updateIntent = pendingUpdateIntent
+                LaunchedEffect(updateIntent, hasCompletedOnboarding) {
+                    if (updateIntent != null && hasCompletedOnboarding) {
+                        val releaseJson = updateIntent.getStringExtra(UpdateNotificationHelper.EXTRA_RELEASE_JSON)
+                        val tagName = updateIntent.getStringExtra(UpdateNotificationHelper.EXTRA_TAG_NAME)
+                        when (updateIntent.action) {
+                            UpdateNotificationHelper.ACTION_OPEN_UPDATE_DIALOG -> {
+                                hatchViewModel.openUpdateDialogFromNotification(releaseJson, tagName)
+                            }
+                            UpdateNotificationHelper.ACTION_INSTALL_CACHED_UPDATE -> {
+                                hatchViewModel.handleInstallCachedUpdateFromNotification(releaseJson, tagName)
+                            }
+                        }
+                        pendingUpdateIntent = null
+                    }
+                }
+                KaiHatchApp(
+                    viewModel = hatchViewModel,
+                    launchedFromUpdateNotification = updateIntent != null
+                )
             }
         }
     }
@@ -264,6 +311,16 @@ class MainActivity : ComponentActivity() {
         setIntent(intent)
         extractUriFromIntent(intent)?.let { pendingIncomingUri = it }
         extractShortcutActionFromIntent(intent)?.let { pendingShortcutAction = it }
+        extractUpdateIntent(intent)?.let { pendingUpdateIntent = it }
+    }
+
+    private fun extractUpdateIntent(intent: Intent?): Intent? {
+        val action = intent?.action ?: return null
+        return when (action) {
+            UpdateNotificationHelper.ACTION_OPEN_UPDATE_DIALOG,
+            UpdateNotificationHelper.ACTION_INSTALL_CACHED_UPDATE -> intent
+            else -> null
+        }
     }
 
     private fun extractShortcutActionFromIntent(intent: Intent?): String? {
@@ -301,10 +358,13 @@ class MainActivity : ComponentActivity() {
 }
 
 @Composable
-fun KaiHatchApp(viewModel: HatchViewModel = viewModel()) {
+fun KaiHatchApp(
+    viewModel: HatchViewModel = viewModel(),
+    launchedFromUpdateNotification: Boolean = false
+) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    val hasCompletedOnboarding by viewModel.hasCompletedOnboarding.collectAsState()
+    val hasCompletedOnboarding by viewModel.hasCompletedOnboarding.collectAsStateWithLifecycle()
 
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
@@ -414,11 +474,75 @@ fun KaiHatchApp(viewModel: HatchViewModel = viewModel()) {
         { compressFilesPickerLauncher.launch(arrayOf("*/*")) }
     }
 
+    // Install Unknown Apps permission flow (Android 8+)
+    val installPermissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) {
+        viewModel.onInstallPermissionSettingsReturned()
+    }
+
+    // Startup GitHub update check + cleanup + WorkManager scheduling
+    LaunchedEffect(Unit) {
+        viewModel.initializeUpdaterOnStartup(
+            launchedFromUpdateNotification = launchedFromUpdateNotification
+        )
+    }
+
+    // One-shot updater UI events (Toasts, native Android installer launch, install permission request)
+    LaunchedEffect(viewModel) {
+        viewModel.updateEvents.collect { event ->
+            when (event) {
+                is UpdateUiEvent.ShowToast -> {
+                    Toast.makeText(context, event.message, Toast.LENGTH_SHORT).show()
+                }
+                is UpdateUiEvent.LaunchInstaller -> {
+                    try {
+                        val installIntent = AppUpdateManager.createNativeInstallerIntent(
+                            context = context,
+                            apkFile = event.apkFile
+                        )
+                        context.startActivity(installIntent)
+                    } catch (_: Exception) {
+                        Toast.makeText(
+                            context,
+                            context.getString(R.string.update_toast_installer_error),
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                }
+                is UpdateUiEvent.RequestInstallPermission -> {
+                    try {
+                        installPermissionLauncher.launch(
+                            AppUpdateManager.createUnknownAppSourcesSettingsIntent(context)
+                        )
+                    } catch (_: Exception) {
+                        Toast.makeText(
+                            context,
+                            context.getString(R.string.update_toast_install_permission_needed),
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                }
+            }
+        }
+    }
+
     KaiHatchRootContent(
         viewModel = viewModel,
         onPickArchive = onPickArchive,
         onPickExplorerArchive = onPickExplorerArchive,
         onPickCompressFiles = onPickCompressFiles
+    )
+
+    val updateDialogState by viewModel.updateDialogState.collectAsStateWithLifecycle()
+    AppUpdateDialog(
+        state = updateDialogState,
+        onUpdateClick = { viewModel.startUpdateDownloadOrInstall() },
+        onSkipClick = { viewModel.skipCurrentUpdate() },
+        onCancelDownloadClick = { viewModel.cancelUpdateDownload() },
+        onRequestInstallPermissionClick = { viewModel.confirmRequestInstallPermission() },
+        onRetryClick = { viewModel.startUpdateDownloadOrInstall() },
+        onDismiss = { viewModel.dismissUpdateDialog() }
     )
 }
 
@@ -429,10 +553,12 @@ private fun KaiHatchRootContent(
     onPickExplorerArchive: () -> Unit,
     onPickCompressFiles: () -> Unit
 ) {
-    val currentTab by viewModel.currentTab.collectAsState()
-    val activePageTab by viewModel.activePageTab.collectAsState()
-    val isSwipeTabsEnabled by viewModel.isSwipeTabsEnabled.collectAsState()
-    val isBlurEnabled by viewModel.isBlurEnabled.collectAsState()
+    com.biplov.kaihatch.ui.diagnostics.RememberDebugFrameMonitor()
+
+    val currentTab by viewModel.currentTab.collectAsStateWithLifecycle()
+    val activePageTab by viewModel.activePageTab.collectAsStateWithLifecycle()
+    val isSwipeTabsEnabled by viewModel.isSwipeTabsEnabled.collectAsStateWithLifecycle()
+    val isBlurEnabled by viewModel.isBlurEnabled.collectAsStateWithLifecycle()
 
     val showSettings = currentTab == ScreenTab.SETTINGS
     val view = LocalView.current
@@ -446,12 +572,23 @@ private fun KaiHatchRootContent(
         pageCount = { PagerDockTabs.size }
     )
 
-    // Keep ViewModel activePageTab synced with Pager settledPage on manual swipe
-    LaunchedEffect(pagerState.settledPage) {
-        val settledSpec = PagerDockTabs.getOrNull(pagerState.settledPage) ?: PagerDockTabs.first()
-        if (!showSettings && activePageTab != settledSpec.tab && pagerState.targetPage == pagerState.settledPage) {
-            HapticUtil.tick(view)
-            viewModel.switchTab(settledSpec.tab)
+    // Keep ViewModel activePageTab synced with Pager settledPage on manual swipe without
+    // reading settledPage directly in KaiHatchRootContent composition scope
+    val currentShowSettings by androidx.compose.runtime.rememberUpdatedState(showSettings)
+    val currentActivePageTab by androidx.compose.runtime.rememberUpdatedState(activePageTab)
+    LaunchedEffect(pagerState) {
+        androidx.compose.runtime.snapshotFlow {
+            Triple(pagerState.settledPage, pagerState.targetPage, pagerState.isScrollInProgress)
+        }.collect { (settledPage, targetPage, isScrolling) ->
+            com.biplov.kaihatch.ui.diagnostics.UiPerformanceMonitor.setInteractionActive(
+                "nav:pager_swipe",
+                isScrolling
+            )
+            val settledSpec = PagerDockTabs.getOrNull(settledPage) ?: PagerDockTabs.first()
+            if (!currentShowSettings && currentActivePageTab != settledSpec.tab && targetPage == settledPage) {
+                HapticUtil.tick(view)
+                viewModel.switchTab(settledSpec.tab)
+            }
         }
     }
 
@@ -461,7 +598,7 @@ private fun KaiHatchRootContent(
         if (targetIndex >= 0 && pagerState.currentPage != targetIndex) {
             pagerState.animateScrollToPage(
                 page = targetIndex,
-                animationSpec = DockPillSpring
+                animationSpec = ExpressiveMotion.DockPagerSpring
             )
         }
     }
@@ -480,28 +617,9 @@ private fun KaiHatchRootContent(
     val primaryTint = MaterialTheme.colorScheme.primary
     val surfaceContainerTint = MaterialTheme.colorScheme.surfaceContainerLow
 
-    // Pre-allocated progressive gradient brushes so drawBehind performs zero per-frame allocations at 120fps
-    val topProgressiveBrush = remember(bgSurface, surfaceContainerTint) {
-        Brush.verticalGradient(
-            0.00f to bgSurface.copy(alpha = 0.98f),
-            0.38f to bgSurface.copy(alpha = 0.86f),
-            0.72f to surfaceContainerTint.copy(alpha = 0.45f),
-            1.00f to Color.Transparent
-        )
-    }
-    val bottomProgressiveBrush = remember(bgSurface, surfaceContainerTint, primaryTint) {
-        Brush.verticalGradient(
-            0.00f to Color.Transparent,
-            0.28f to bgSurface.copy(alpha = 0.42f),
-            0.62f to surfaceContainerTint.copy(alpha = 0.84f),
-            0.85f to bgSurface.copy(alpha = 0.95f),
-            1.00f to bgSurface.copy(alpha = 0.99f)
-        )
-    }
-
     val blurScrimAlphaState = animateFloatAsState(
         targetValue = if (isBlurEnabled) 1f else 0f,
-        animationSpec = tween(durationMillis = 200, easing = FastOutSlowInEasing),
+        animationSpec = ExpressiveMotion.ScrimFadeSpec,
         label = "progressive_blur_alpha"
     )
     val isBlurScrimMounted by remember {
@@ -510,12 +628,30 @@ private fun KaiHatchRootContent(
 
     val settingsProgressState = animateFloatAsState(
         targetValue = if (showSettings) 1f else 0f,
-        animationSpec = tween(durationMillis = 220, easing = FastOutSlowInEasing),
+        animationSpec = ExpressiveMotion.OverlayTransitionSpec,
         label = "settings_transition"
     )
     // Only flips at transition boundaries so intermediate frames never trigger root recomposition
     val isSettingsMounted by remember {
         derivedStateOf { showSettings || settingsProgressState.value > 0.001f }
+    }
+    val isSettingsTransitioning by remember {
+        derivedStateOf { settingsProgressState.value > 0.001f && settingsProgressState.value < 0.999f }
+    }
+    LaunchedEffect(isSettingsTransitioning) {
+        com.biplov.kaihatch.ui.diagnostics.UiPerformanceMonitor.setInteractionActive(
+            "transition:settings",
+            isSettingsTransitioning
+        )
+    }
+
+    val spaceLabProgressState = animateFloatAsState(
+        targetValue = if (showSpaceLab) 1f else 0f,
+        animationSpec = ExpressiveMotion.OverlayTransitionSpec,
+        label = "space_lab_transition"
+    )
+    val isSpaceLabMounted by remember {
+        derivedStateOf { showSpaceLab || spaceLabProgressState.value > 0.001f }
     }
 
     Scaffold(
@@ -538,11 +674,17 @@ private fun KaiHatchRootContent(
                     .fillMaxSize()
                     .statusBarsPadding()
                     .graphicsLayer {
-                        val p = if (showSpaceLab) 1f else settingsProgressState.value
-                        alpha = (1f - p * 1.25f).coerceIn(0f, 1f)
-                        val s = 1f - (p * 0.035f)
-                        scaleX = s
-                        scaleY = s
+                        val p = maxOf(settingsProgressState.value, spaceLabProgressState.value)
+                        if (p > 0.001f) {
+                            alpha = (1f - p * 1.25f).coerceIn(0f, 1f)
+                            val s = 1f - (p * 0.035f)
+                            scaleX = s
+                            scaleY = s
+                        } else {
+                            alpha = 1f
+                            scaleX = 1f
+                            scaleY = 1f
+                        }
                     }
             ) { page ->
                 when (PagerDockTabs[page].tab) {
@@ -555,12 +697,19 @@ private fun KaiHatchRootContent(
                 }
             }
 
-            // 1b. Space Lab Benchmark Overlay (Opened inside Settings)
-            if (showSpaceLab) {
+            // 1b. Space Lab Benchmark Overlay (Driven purely by GPU graphicsLayer & drawBehind during transition)
+            if (isSpaceLabMounted) {
                 Box(
                     modifier = Modifier
                         .fillMaxSize()
-                        .background(bgSurface)
+                        .drawBehind {
+                            drawRect(color = bgSurface, alpha = spaceLabProgressState.value)
+                        }
+                        .graphicsLayer {
+                            val p = spaceLabProgressState.value
+                            alpha = p
+                            translationY = (1f - p) * 28.dp.toPx()
+                        }
                         .statusBarsPadding()
                 ) {
                     SpaceLabScreen(viewModel = viewModel)
@@ -593,9 +742,18 @@ private fun KaiHatchRootContent(
                         .fillMaxWidth()
                         .height(64.dp)
                         .align(Alignment.TopCenter)
-                        .graphicsLayer { alpha = blurScrimAlphaState.value }
-                        .drawBehind {
-                            drawRect(brush = topProgressiveBrush)
+                        .drawWithCache {
+                            val cachedTopBrush = Brush.verticalGradient(
+                                0.00f to bgSurface.copy(alpha = 0.98f),
+                                0.38f to bgSurface.copy(alpha = 0.86f),
+                                0.72f to surfaceContainerTint.copy(alpha = 0.45f),
+                                1.00f to Color.Transparent,
+                                startY = 0f,
+                                endY = size.height
+                            )
+                            onDrawBehind {
+                                drawRect(brush = cachedTopBrush, alpha = blurScrimAlphaState.value)
+                            }
                         }
                 )
 
@@ -604,33 +762,27 @@ private fun KaiHatchRootContent(
                         .fillMaxWidth()
                         .height(144.dp)
                         .align(Alignment.BottomCenter)
-                        .graphicsLayer { alpha = blurScrimAlphaState.value }
-                        .drawBehind {
-                            drawRect(brush = bottomProgressiveBrush)
+                        .drawWithCache {
+                            val cachedBottomBrush = Brush.verticalGradient(
+                                0.00f to Color.Transparent,
+                                0.28f to bgSurface.copy(alpha = 0.42f),
+                                0.62f to surfaceContainerTint.copy(alpha = 0.84f),
+                                0.85f to bgSurface.copy(alpha = 0.95f),
+                                1.00f to bgSurface.copy(alpha = 0.99f),
+                                startY = 0f,
+                                endY = size.height
+                            )
+                            onDrawBehind {
+                                drawRect(brush = cachedBottomBrush, alpha = blurScrimAlphaState.value)
+                            }
                         }
                 )
             }
 
             // 4. Contextual Floating Action Tile (Bottom-Right above dock) + Outside-Tap Collapse Layer
-            val isFloatingControlsExpanded by viewModel.isFloatingControlsExpanded.collectAsState()
-            val showStopConfirmDialog by viewModel.showStopConfirmDialog.collectAsState()
-            val extractionProgressForDialog by viewModel.extractionProgress.collectAsState()
-
-            if (!showSettings && !showSpaceLab && isFloatingControlsExpanded && extractionProgressForDialog.status.isActiveSession) {
-                val outsideTapInteraction = remember { MutableInteractionSource() }
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .clickable(
-                            interactionSource = outsideTapInteraction,
-                            indication = null,
-                            onClick = { viewModel.setFloatingControlsExpanded(false) }
-                        )
-                        .testTag("floating_controls_outside_scrim")
-                )
-            }
-
             if (!showSettings && !showSpaceLab) {
+                HatchFloatingControlsOutsideScrim(viewModel = viewModel)
+
                 HatchFloatingActionOverlay(
                     activePageTab = activePageTab,
                     viewModel = viewModel,
@@ -644,13 +796,7 @@ private fun KaiHatchRootContent(
                 )
             }
 
-            if (showStopConfirmDialog && extractionProgressForDialog.status.isActiveSession) {
-                StopExtractionConfirmationDialog(
-                    isHatchMode = extractionProgressForDialog.isHatchMode,
-                    onKeepExtracting = { viewModel.dismissStopExtractionConfirmation() },
-                    onConfirmStop = { viewModel.confirmStopExtraction() }
-                )
-            }
+            HatchStopConfirmationOverlay(viewModel = viewModel)
 
             // 5. Essentials-style Morphing Floating Bottom Dock
             val dockOverlayMode = when {
@@ -671,7 +817,7 @@ private fun KaiHatchRootContent(
                     coroutineScope.launch {
                         pagerState.animateScrollToPage(
                             page = targetIndex,
-                            animationSpec = DockPillSpring
+                            animationSpec = ExpressiveMotion.DockPagerSpring
                         )
                     }
                 },
@@ -700,9 +846,53 @@ private fun KaiHatchRootContent(
     }
 }
 
+@Composable
+private fun HatchFloatingControlsOutsideScrim(viewModel: HatchViewModel) {
+    val isFloatingControlsExpanded by viewModel.isFloatingControlsExpanded.collectAsStateWithLifecycle()
+    val extractionProgressState = viewModel.extractionProgress.collectAsStateWithLifecycle()
+    val isActiveSession by remember {
+        derivedStateOf { extractionProgressState.value.status.isActiveSession }
+    }
+
+    if (isFloatingControlsExpanded && isActiveSession) {
+        val outsideTapInteraction = remember { MutableInteractionSource() }
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .clickable(
+                    interactionSource = outsideTapInteraction,
+                    indication = null,
+                    onClick = { viewModel.setFloatingControlsExpanded(false) }
+                )
+                .testTag("floating_controls_outside_scrim")
+        )
+    }
+}
+
+@Composable
+private fun HatchStopConfirmationOverlay(viewModel: HatchViewModel) {
+    val showStopConfirmDialog by viewModel.showStopConfirmDialog.collectAsStateWithLifecycle()
+    val extractionProgressState = viewModel.extractionProgress.collectAsStateWithLifecycle()
+    val isActiveSession by remember {
+        derivedStateOf { extractionProgressState.value.status.isActiveSession }
+    }
+    val isHatchMode by remember {
+        derivedStateOf { extractionProgressState.value.isHatchMode }
+    }
+
+    if (showStopConfirmDialog && isActiveSession) {
+        StopExtractionConfirmationDialog(
+            isHatchMode = isHatchMode,
+            onKeepExtracting = { viewModel.dismissStopExtractionConfirmation() },
+            onConfirmStop = { viewModel.confirmStopExtraction() }
+        )
+    }
+}
+
 /**
  * Floating Action Overlay above the bottom dock.
- * Scopes StateFlow subscriptions to the active tab so background state changes never trigger cross-tab recomposition.
+ * Scopes StateFlow subscriptions to the active tab and isolates byte-progress updates inside
+ * [ExpressiveProgressStopTile] so background state changes never trigger cross-tab recomposition.
  */
 @Composable
 private fun HatchFloatingActionOverlay(
@@ -713,16 +903,24 @@ private fun HatchFloatingActionOverlay(
     onPickCompressFiles: () -> Unit,
     modifier: Modifier = Modifier
 ) {
-    val extractionProgress by viewModel.extractionProgress.collectAsState()
-    val compressionProgress by viewModel.compressionProgress.collectAsState()
-    val isFloatingControlsExpanded by viewModel.isFloatingControlsExpanded.collectAsState()
+    val extractionProgressState = viewModel.extractionProgress.collectAsStateWithLifecycle()
+    val compressionProgressState = viewModel.compressionProgress.collectAsStateWithLifecycle()
+    val isFloatingControlsExpanded by viewModel.isFloatingControlsExpanded.collectAsStateWithLifecycle()
     val view = LocalView.current
 
-    val isExtracting = extractionProgress.status.isActiveSession
-    val isPausedOrPausing = extractionProgress.status == ExtractionStatus.PAUSED ||
-        extractionProgress.status == ExtractionStatus.PAUSING
-    val isCompressing = compressionProgress.status == CompressionStatus.COMPRESSING ||
-        compressionProgress.status == CompressionStatus.PREPARING
+    val extractionStatus by remember {
+        derivedStateOf { extractionProgressState.value.status }
+    }
+    val isPauseSupported by remember {
+        derivedStateOf { extractionProgressState.value.isPauseSupported }
+    }
+    val compressionStatus by remember {
+        derivedStateOf { compressionProgressState.value.status }
+    }
+
+    val isExtracting = extractionStatus.isActiveSession
+    val isCompressing = compressionStatus == CompressionStatus.COMPRESSING ||
+        compressionStatus == CompressionStatus.PREPARING
 
     Column(
         modifier = modifier,
@@ -730,27 +928,11 @@ private fun HatchFloatingActionOverlay(
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         if (isExtracting) {
-            val rawProgress = extractionProgress.overallProgressFraction.coerceIn(0f, 1f)
-            val animatedProgressState = animateFloatAsState(
-                targetValue = rawProgress,
-                animationSpec = if (isPausedOrPausing) {
-                    SnapSpec()
-                } else {
-                    spring(
-                        dampingRatio = Spring.DampingRatioNoBouncy,
-                        stiffness = Spring.StiffnessMediumLow
-                    )
-                },
-                label = "stop_tile_progress_outline"
-            )
-
             AnimatedExtractionFloatingControls(
                 isExpanded = isFloatingControlsExpanded,
-                status = extractionProgress.status,
-                isPauseSupported = extractionProgress.isPauseSupported,
-                progressProvider = {
-                    if (isPausedOrPausing) rawProgress else animatedProgressState.value
-                },
+                status = extractionStatus,
+                isPauseSupported = isPauseSupported,
+                rawProgressProvider = { extractionProgressState.value.overallProgressFraction },
                 onExpandClick = {
                     HapticUtil.click(view)
                     viewModel.setFloatingControlsExpanded(true)
@@ -769,17 +951,9 @@ private fun HatchFloatingActionOverlay(
                 }
             )
         } else if (isCompressing) {
-            val rawProgress = compressionProgress.overallProgressFraction
-            val animatedProgressState = animateFloatAsState(
-                targetValue = rawProgress.coerceIn(0f, 1f),
-                animationSpec = spring(
-                    dampingRatio = Spring.DampingRatioNoBouncy,
-                    stiffness = Spring.StiffnessMediumLow
-                ),
-                label = "stop_tile_progress_outline"
-            )
             ExpressiveProgressStopTile(
-                progressProvider = { animatedProgressState.value },
+                rawProgressProvider = { compressionProgressState.value.overallProgressFraction },
+                snapProgressAnimation = false,
                 containerColor = MaterialTheme.colorScheme.errorContainer,
                 contentColor = MaterialTheme.colorScheme.onErrorContainer,
                 progressOutlineColor = MaterialTheme.colorScheme.error,
@@ -820,13 +994,13 @@ private fun ExtractTabFabs(
     viewModel: HatchViewModel,
     onPickArchive: () -> Unit
 ) {
-    val archiveSummary by viewModel.archiveSummary.collectAsState()
+    val archiveSummary by viewModel.archiveSummary.collectAsStateWithLifecycle()
     val view = LocalView.current
 
     if (archiveSummary == null) {
         ExpressiveActionTile(
             icon = Icons.Default.FolderOpen,
-            label = "OPEN",
+            label = stringResource(R.string.action_open),
             containerColor = MaterialTheme.colorScheme.primaryContainer,
             contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
             onClick = {
@@ -842,16 +1016,16 @@ private fun ExplorerTabFabs(
     viewModel: HatchViewModel,
     onPickExplorerArchive: () -> Unit
 ) {
-    val exploringArchive by viewModel.exploringArchive.collectAsState()
-    val exploringSafUri by viewModel.exploringSafUri.collectAsState()
-    val selectedExplorerPaths by viewModel.selectedExplorerPaths.collectAsState()
+    val exploringArchive by viewModel.exploringArchive.collectAsStateWithLifecycle()
+    val exploringSafUri by viewModel.exploringSafUri.collectAsStateWithLifecycle()
+    val selectedExplorerPaths by viewModel.selectedExplorerPaths.collectAsStateWithLifecycle()
     val view = LocalView.current
 
     val hasExplorerLoaded = exploringArchive != null || exploringSafUri != null
     if (hasExplorerLoaded && selectedExplorerPaths.isNotEmpty()) {
         ExpressiveActionTile(
             icon = Icons.Default.Unarchive,
-            label = "EXTRACT (${selectedExplorerPaths.size})",
+            label = stringResource(R.string.action_extract_count, selectedExplorerPaths.size),
             containerColor = MaterialTheme.colorScheme.primaryContainer,
             contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
             onClick = {
@@ -862,7 +1036,7 @@ private fun ExplorerTabFabs(
     } else {
         ExpressiveActionTile(
             icon = Icons.Default.FolderOpen,
-            label = "OPEN",
+            label = stringResource(R.string.action_open),
             containerColor = MaterialTheme.colorScheme.primaryContainer,
             contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
             onClick = {
@@ -875,13 +1049,13 @@ private fun ExplorerTabFabs(
 
 @Composable
 private fun SpaceLabTabFabs(viewModel: HatchViewModel) {
-    val labGenerating by viewModel.labGenerating.collectAsState()
+    val labGenerating by viewModel.labGenerating.collectAsStateWithLifecycle()
     val view = LocalView.current
 
     if (!labGenerating) {
         ExpressiveActionTile(
             icon = Icons.Default.Science,
-            label = "DEMO",
+            label = stringResource(R.string.action_demo),
             containerColor = MaterialTheme.colorScheme.primaryContainer,
             contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
             onClick = {
@@ -897,13 +1071,13 @@ private fun HistoryTabFabs(
     viewModel: HatchViewModel,
     onPickArchive: () -> Unit
 ) {
-    val historyRecords by viewModel.historyRepo.records.collectAsState()
+    val historyRecords by viewModel.historyRepo.records.collectAsStateWithLifecycle()
     val view = LocalView.current
 
     if (historyRecords.isNotEmpty()) {
         ExpressiveActionTile(
             icon = Icons.Default.DeleteSweep,
-            label = "CLEAR",
+            label = stringResource(R.string.action_clear),
             containerColor = MaterialTheme.colorScheme.secondaryContainer,
             contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
             onClick = {
@@ -914,7 +1088,7 @@ private fun HistoryTabFabs(
     } else {
         ExpressiveActionTile(
             icon = Icons.Default.FolderOpen,
-            label = "OPEN",
+            label = stringResource(R.string.action_open),
             containerColor = MaterialTheme.colorScheme.primaryContainer,
             contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
             onClick = {
@@ -1021,18 +1195,19 @@ internal data class CollapsedExtractionTileSpec(
     val contentDescription: String
 )
 
-internal fun resolveCollapsedExtractionTileSpec(status: ExtractionStatus): CollapsedExtractionTileSpec {
+internal fun resolveCollapsedExtractionTileSpec(
+    status: ExtractionStatus,
+    actionsLabel: String = "Actions",
+    pausedDescription: String = "Extraction actions, paused. Double tap to open Resume and Stop controls.",
+    runningDescription: String = "Extraction actions. Double tap to open Pause and Stop controls."
+): CollapsedExtractionTileSpec {
     // State-aware collapsed icon: Pause while running (including PAUSING transition before engine
     // acknowledges pause), Play only once PAUSED is reached.
     val isPaused = status == ExtractionStatus.PAUSED
     return CollapsedExtractionTileSpec(
         icon = if (isPaused) Icons.Default.PlayArrow else Icons.Default.Pause,
-        label = "Actions",
-        contentDescription = if (isPaused) {
-            "Extraction actions, paused. Double tap to open Resume and Stop controls."
-        } else {
-            "Extraction actions. Double tap to open Pause and Stop controls."
-        }
+        label = actionsLabel,
+        contentDescription = if (isPaused) pausedDescription else runningDescription
     )
 }
 
@@ -1046,7 +1221,7 @@ private fun AnimatedExtractionFloatingControls(
     isExpanded: Boolean,
     status: ExtractionStatus,
     isPauseSupported: Boolean,
-    progressProvider: () -> Float,
+    rawProgressProvider: () -> Float,
     onExpandClick: () -> Unit,
     onPauseClick: () -> Unit,
     onResumeClick: () -> Unit,
@@ -1057,33 +1232,40 @@ private fun AnimatedExtractionFloatingControls(
 
     val isPaused = status == ExtractionStatus.PAUSED
     val isPausing = status == ExtractionStatus.PAUSING
-    val pauseActionEnabled = isPauseSupported && !isPausing
+    val isFinalizing = status == ExtractionStatus.FINALIZING
+    val isPausedOrPausing = isPaused || isPausing || isFinalizing
+    val pauseActionEnabled = isPauseSupported && !isPausing && !isFinalizing
 
-    // Uses the same Spring.StiffnessMediumLow animation spec as Compose's default AnimatedVisibility
-    // in JournalTerminal so the progress outline hides/restores in lockstep with the expand/collapse.
-    val outlineAlpha by animateFloatAsState(
+    // Uses ExpressiveMotion.ProgressSpring so the progress outline hides/restores in lockstep with
+    // the expand/collapse while reading outlineAlphaState.value exclusively in the draw phase.
+    val outlineAlphaState = animateFloatAsState(
         targetValue = if (isExpanded) 0f else 1f,
         animationSpec = if (!animationsEnabled) {
             SnapSpec()
         } else {
-            spring(stiffness = Spring.StiffnessMediumLow)
+            ExpressiveMotion.ProgressSpring
         },
         label = "floating_controls_outline_alpha"
     )
 
     val pauseResumeIcon = if (isPaused) Icons.Default.PlayArrow else Icons.Default.Pause
     val pauseResumeLabel = when {
-        isPaused -> "RESUME"
-        isPausing -> "PAUSING"
-        else -> "PAUSE"
+        isPaused -> stringResource(R.string.action_resume)
+        isPausing -> stringResource(R.string.action_pausing)
+        else -> stringResource(R.string.action_pause)
     }
     val pauseResumeDesc = when {
-        isPaused -> "Resume extraction"
-        isPausing -> "Pausing extraction at safe checkpoint"
-        else -> "Pause extraction"
+        isPaused -> stringResource(R.string.cd_resume_extraction)
+        isPausing -> stringResource(R.string.cd_pausing_extraction)
+        else -> stringResource(R.string.cd_pause_extraction)
     }
 
-    val collapsedSpec = resolveCollapsedExtractionTileSpec(status)
+    val collapsedSpec = resolveCollapsedExtractionTileSpec(
+        status = status,
+        actionsLabel = stringResource(R.string.action_actions),
+        pausedDescription = stringResource(R.string.cd_extraction_actions_paused),
+        runningDescription = stringResource(R.string.cd_extraction_actions_running)
+    )
 
     Row(
         modifier = if (isExpanded) {
@@ -1094,7 +1276,7 @@ private fun AnimatedExtractionFloatingControls(
         verticalAlignment = Alignment.CenterVertically
     ) {
         AnimatedVisibility(
-            visible = isExpanded,
+            visible = isExpanded && !isFinalizing,
             enter = if (animationsEnabled) {
                 fadeIn() + expandHorizontally()
             } else {
@@ -1155,20 +1337,35 @@ private fun AnimatedExtractionFloatingControls(
         }
 
         ExpressiveProgressStopTile(
-            progressProvider = progressProvider,
-            outlineAlphaProvider = { outlineAlpha },
-            containerColor = MaterialTheme.colorScheme.errorContainer,
-            contentColor = MaterialTheme.colorScheme.onErrorContainer,
-            progressOutlineColor = MaterialTheme.colorScheme.error,
-            icon = if (isExpanded) Icons.Default.Stop else collapsedSpec.icon,
-            label = if (isExpanded) "STOP" else collapsedSpec.label,
-            contentDescription = if (isExpanded) "Stop extraction" else collapsedSpec.contentDescription,
-            testTag = if (isExpanded) "floating_expanded_stop_button" else "floating_stop_action_tile",
+            rawProgressProvider = rawProgressProvider,
+            snapProgressAnimation = isPausedOrPausing,
+            outlineAlphaProvider = { outlineAlphaState.value },
+            containerColor = if (isFinalizing) {
+                MaterialTheme.colorScheme.surfaceContainerHighest
+            } else {
+                MaterialTheme.colorScheme.errorContainer
+            },
+            contentColor = if (isFinalizing) {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            } else {
+                MaterialTheme.colorScheme.onErrorContainer
+            },
+            progressOutlineColor = if (isFinalizing) {
+                MaterialTheme.colorScheme.primary
+            } else {
+                MaterialTheme.colorScheme.error
+            },
+            icon = if (isExpanded && !isFinalizing) Icons.Default.Stop else collapsedSpec.icon,
+            label = if (isExpanded && !isFinalizing) stringResource(R.string.action_stop) else collapsedSpec.label,
+            contentDescription = if (isExpanded && !isFinalizing) stringResource(R.string.cd_stop_extraction) else collapsedSpec.contentDescription,
+            testTag = if (isExpanded && !isFinalizing) "floating_expanded_stop_button" else "floating_stop_action_tile",
             onClick = {
-                if (!isExpanded) {
-                    onExpandClick()
-                } else {
-                    onStopClick()
+                if (!isFinalizing) {
+                    if (!isExpanded) {
+                        onExpandClick()
+                    } else {
+                        onStopClick()
+                    }
                 }
             }
         )
@@ -1182,11 +1379,15 @@ private fun StopExtractionConfirmationDialog(
     onConfirmStop: () -> Unit
 ) {
     val bodyMessage = if (isHatchMode) {
-        "In-Place Extraction may have already modified the original archive. Stopping now could leave the remaining archive unreadable, and unfinished files may not be recoverable."
+        stringResource(R.string.stop_extraction_dialog_body_hatch)
     } else {
-        "Extraction will stop, but your original archive will remain unchanged. Incomplete output files may need to be extracted again."
+        stringResource(R.string.stop_extraction_dialog_body_standard)
     }
-    val confirmButtonLabel = if (isHatchMode) "Stop Anyway" else "Stop Extraction"
+    val confirmButtonLabel = if (isHatchMode) {
+        stringResource(R.string.stop_extraction_confirm_hatch)
+    } else {
+        stringResource(R.string.stop_extraction_confirm_standard)
+    }
 
     AlertDialog(
         onDismissRequest = onKeepExtracting,
@@ -1199,7 +1400,7 @@ private fun StopExtractionConfirmationDialog(
         },
         title = {
             Text(
-                text = "Stop extraction?",
+                text = stringResource(R.string.stop_extraction_dialog_title),
                 fontWeight = FontWeight.ExtraBold
             )
         },
@@ -1231,7 +1432,7 @@ private fun StopExtractionConfirmationDialog(
                 modifier = Modifier.testTag("keep_extracting_button")
             ) {
                 Text(
-                    text = "Keep Extracting",
+                    text = stringResource(R.string.stop_extraction_keep_extracting),
                     fontWeight = FontWeight.Bold
                 )
             }
@@ -1242,17 +1443,29 @@ private fun StopExtractionConfirmationDialog(
 
 @Composable
 private fun ExpressiveProgressStopTile(
-    progressProvider: () -> Float,
+    rawProgressProvider: () -> Float,
+    snapProgressAnimation: Boolean = false,
     containerColor: Color,
     contentColor: Color,
     progressOutlineColor: Color,
     icon: ImageVector = Icons.Default.Stop,
-    label: String = "STOP",
+    label: String = stringResource(R.string.action_stop),
     contentDescription: String = label,
     outlineAlphaProvider: () -> Float = { 1f },
     testTag: String = "floating_stop_action_tile",
     onClick: () -> Unit
 ) {
+    val rawProgress = rawProgressProvider().coerceIn(0f, 1f)
+    val animatedProgressState = animateFloatAsState(
+        targetValue = rawProgress,
+        animationSpec = if (snapProgressAnimation) {
+            SnapSpec()
+        } else {
+            ExpressiveMotion.ProgressSpring
+        },
+        label = "stop_tile_progress_outline"
+    )
+
     Column(
         modifier = Modifier
             .size(width = 68.dp, height = 68.dp)
@@ -1322,7 +1535,7 @@ private fun ExpressiveProgressStopTile(
                             color = trackColor.copy(alpha = trackColor.alpha * outlineAlpha),
                             style = trackStroke
                         )
-                        val progress = progressProvider().coerceIn(0f, 1f)
+                        val progress = (if (snapProgressAnimation) rawProgress else animatedProgressState.value).coerceIn(0f, 1f)
                         val stopDistance = pathMeasure.length * progress.coerceAtLeast(0.03f)
                         segmentPath.reset()
                         pathMeasure.getSegment(
@@ -1465,14 +1678,14 @@ private fun HatchFloatingBottomDock(
                             ) {
                                 Icon(
                                     imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                                    contentDescription = "Back to workspace",
+                                    contentDescription = stringResource(R.string.nav_back_to_workspace),
                                     tint = activeContentColor,
                                     modifier = Modifier.size(22.dp)
                                 )
                             }
 
                             Text(
-                                text = "Settings",
+                                text = stringResource(R.string.nav_settings),
                                 style = MaterialTheme.typography.titleMedium,
                                 fontWeight = FontWeight.ExtraBold,
                                 color = MaterialTheme.colorScheme.onSurface,
@@ -1506,7 +1719,7 @@ private fun HatchFloatingBottomDock(
                             ) {
                                 Icon(
                                     imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                                    contentDescription = "Back to Settings",
+                                    contentDescription = stringResource(R.string.nav_back_to_settings),
                                     tint = activeContentColor,
                                     modifier = Modifier.size(22.dp)
                                 )
@@ -1520,7 +1733,7 @@ private fun HatchFloatingBottomDock(
                             ) {
                                 Icon(
                                     imageVector = Icons.Default.Science,
-                                    contentDescription = "Space Lab",
+                                    contentDescription = stringResource(R.string.nav_space_lab),
                                     tint = MaterialTheme.colorScheme.onSurface,
                                     modifier = Modifier.size(22.dp)
                                 )
@@ -1544,7 +1757,11 @@ private fun HatchFloatingBottomDock(
                                     val fractionalPage = (pagerState.currentPage + pagerState.currentPageOffsetFraction)
                                         .coerceIn(0f, (PagerDockTabs.size - 1).toFloat())
                                     val itemW = itemWidthDp.toPx()
-                                    val indicatorLeft = fractionalPage * itemW
+                                    val indicatorLeft = if (layoutDirection == androidx.compose.ui.unit.LayoutDirection.Rtl) {
+                                        (size.width - itemW) - (fractionalPage * itemW)
+                                    } else {
+                                        fractionalPage * itemW
+                                    }
                                     drawRoundRect(
                                         color = activeIndicatorColor,
                                         topLeft = Offset(indicatorLeft, 0f),
@@ -1561,7 +1778,7 @@ private fun HatchFloatingBottomDock(
                                     val isNearest = index == nearestTabIndex
                                     val tintColor by animateColorAsState(
                                         targetValue = if (isNearest) activeContentColor else inactiveContentColor,
-                                        animationSpec = TabIconColorSpring,
+                                        animationSpec = ExpressiveMotion.TabTintSpring,
                                         label = "tab_tint"
                                     )
                                     DockTabItem(
@@ -1584,22 +1801,30 @@ private fun HatchFloatingBottomDock(
             // - In Settings: shows Home icon (returns to app)
             // - In Workspace or Lab: shows Settings icon (opens/returns to Settings)
             val isHomeButton = dockMode == DockOverlayMode.SETTINGS
-            val companionBgColor = if (dockMode != DockOverlayMode.WORKSPACE) {
-                MaterialTheme.colorScheme.secondaryContainer
-            } else {
-                dockContainerColor
-            }
-            val companionIconTint = if (dockMode != DockOverlayMode.WORKSPACE) {
-                MaterialTheme.colorScheme.onSecondaryContainer
-            } else {
-                MaterialTheme.colorScheme.onSurfaceVariant
-            }
+            val companionBgColorState = animateColorAsState(
+                targetValue = if (dockMode != DockOverlayMode.WORKSPACE) {
+                    MaterialTheme.colorScheme.secondaryContainer
+                } else {
+                    dockContainerColor
+                },
+                animationSpec = ExpressiveMotion.TabTintSpring,
+                label = "companion_bg_color"
+            )
+            val companionIconTint by animateColorAsState(
+                targetValue = if (dockMode != DockOverlayMode.WORKSPACE) {
+                    MaterialTheme.colorScheme.onSecondaryContainer
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+                animationSpec = ExpressiveMotion.TabTintSpring,
+                label = "companion_icon_tint"
+            )
 
             Box(
                 modifier = Modifier
                     .size(56.dp)
                     .clip(CircleShape)
-                    .background(companionBgColor)
+                    .drawBehind { drawCircle(color = companionBgColorState.value) }
                     .border(1.dp, dockBorderColor, CircleShape)
                     .clickable(
                         role = Role.Button,
@@ -1610,7 +1835,7 @@ private fun HatchFloatingBottomDock(
             ) {
                 Icon(
                     imageVector = if (isHomeButton) Icons.Default.Home else Icons.Default.Settings,
-                    contentDescription = if (isHomeButton) "Home" else "Settings",
+                    contentDescription = if (isHomeButton) stringResource(R.string.nav_home) else stringResource(R.string.nav_settings),
                     tint = companionIconTint,
                     modifier = Modifier.size(22.dp)
                 )
@@ -1632,6 +1857,7 @@ private fun DockTabItem(
     modifier: Modifier = Modifier
 ) {
     val interactionSource = remember { MutableInteractionSource() }
+    val localizedTitle = stringResource(spec.titleResId)
     Column(
         modifier = modifier
             .testTag(spec.testTag)
@@ -1647,13 +1873,13 @@ private fun DockTabItem(
     ) {
         Icon(
             imageVector = if (isSelected) spec.selectedIcon else spec.unselectedIcon,
-            contentDescription = spec.title,
+            contentDescription = localizedTitle,
             tint = tintColor,
             modifier = Modifier.size(19.dp)
         )
         Spacer(modifier = Modifier.height(2.dp))
         Text(
-            text = spec.title,
+            text = localizedTitle,
             style = MaterialTheme.typography.labelSmall.copy(
                 fontSize = 10.sp
             ),

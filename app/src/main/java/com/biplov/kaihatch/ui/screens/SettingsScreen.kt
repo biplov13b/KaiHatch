@@ -8,9 +8,13 @@ import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -39,49 +43,64 @@ import androidx.compose.material.icons.filled.CleaningServices
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.FolderShared
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.NotificationsActive
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Science
+import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Swipe
-import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.biplov.kaihatch.R
 import com.biplov.kaihatch.data.HatchNotificationHelper
 import com.biplov.kaihatch.data.StorageHelper
 import com.biplov.kaihatch.model.AppAccentPalette
+import com.biplov.kaihatch.model.AppLanguage
 import com.biplov.kaihatch.model.AppThemeMode
 import com.biplov.kaihatch.ui.HatchViewModel
 import com.biplov.kaihatch.ui.components.ExpressiveCloverIcon
 import com.biplov.kaihatch.ui.components.ExpressiveGroupPosition
 import com.biplov.kaihatch.ui.components.ExpressiveGroupedCard
+import com.biplov.kaihatch.ui.components.ExpressiveMotion
 import com.biplov.kaihatch.ui.components.ExpressiveSectionHeader
 import com.biplov.kaihatch.ui.components.HapticUtil
+import com.biplov.kaihatch.ui.components.LanguagePickerDialog
 import com.biplov.kaihatch.ui.theme.JetBrainsMonoFontFamily
 
 private val PaletteRows = AppAccentPalette.entries.chunked(2)
@@ -91,6 +110,14 @@ private val PillShape = RoundedCornerShape(50)
 private val FolderCardShape = RoundedCornerShape(16.dp)
 private val FooterCardShape = RoundedCornerShape(26.dp)
 private val BackButtonShape = RoundedCornerShape(16.dp)
+private val AccordionExpandedShape = RoundedCornerShape(
+    topStart = 24.dp,
+    topEnd = 24.dp,
+    bottomStart = 8.dp,
+    bottomEnd = 8.dp
+)
+private val AccordionCollapsedShape = RoundedCornerShape(24.dp)
+private val AccordionIconShape = RoundedCornerShape(13.dp)
 
 @Composable
 fun SettingsScreen(
@@ -101,13 +128,22 @@ fun SettingsScreen(
     val context = LocalContext.current
     val view = LocalView.current
 
-    val accentPalette by viewModel.accentPalette.collectAsState()
-    val themeMode by viewModel.themeMode.collectAsState()
-    val isHatchMode by viewModel.isHatchMode.collectAsState()
-    val isBlurEnabled by viewModel.isBlurEnabled.collectAsState()
-    val isSwipeTabsEnabled by viewModel.isSwipeTabsEnabled.collectAsState()
-    val notificationsEnabled by viewModel.notificationsEnabled.collectAsState()
-    val grantedFolder by viewModel.grantedFolder.collectAsState()
+    val accentPalette by viewModel.accentPalette.collectAsStateWithLifecycle()
+    val themeMode by viewModel.themeMode.collectAsStateWithLifecycle()
+    val appLanguage by viewModel.appLanguage.collectAsStateWithLifecycle()
+    val isSystemLanguageSupported by viewModel.isSystemLanguageSupported.collectAsStateWithLifecycle()
+    val isBlurEnabled by viewModel.isBlurEnabled.collectAsStateWithLifecycle()
+    val isSwipeTabsEnabled by viewModel.isSwipeTabsEnabled.collectAsStateWithLifecycle()
+    val notificationsEnabled by viewModel.notificationsEnabled.collectAsStateWithLifecycle()
+    val allFilesAccessEnabled by viewModel.allFilesAccessEnabled.collectAsStateWithLifecycle()
+    val grantedFolder by viewModel.grantedFolder.collectAsStateWithLifecycle()
+    val isCheckingForUpdates by viewModel.isCheckingForUpdates.collectAsStateWithLifecycle()
+    val isAllFilesAccessSupported = StorageHelper.isAllFilesAccessSupportedOnDevice()
+
+    var appearanceExpanded by rememberSaveable { mutableStateOf(false) }
+    var permissionsExpanded by rememberSaveable { mutableStateOf(false) }
+    var miscExpanded by rememberSaveable { mutableStateOf(false) }
+    var showLanguagePicker by rememberSaveable { mutableStateOf(false) }
 
     val primary = MaterialTheme.colorScheme.primary
     val onPrimary = MaterialTheme.colorScheme.onPrimary
@@ -146,9 +182,9 @@ fun SettingsScreen(
         viewModel.refreshPermissionsState()
         if (isGranted) {
             HatchNotificationHelper.ensureChannels(context)
-            Toast.makeText(context, "Notifications enabled", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, context.getString(R.string.settings_toast_notifications_enabled), Toast.LENGTH_SHORT).show()
         } else {
-            Toast.makeText(context, "Notification permission declined", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, context.getString(R.string.settings_toast_notifications_declined), Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -158,7 +194,55 @@ fun SettingsScreen(
         if (treeUri != null) {
             viewModel.onFolderPermissionGranted(treeUri)
             val savedInfo = StorageHelper.parseGrantedFolderUri(treeUri)
-            Toast.makeText(context, "Folder selected: ${savedInfo.displayName}", Toast.LENGTH_SHORT).show()
+            Toast.makeText(context, context.getString(R.string.settings_toast_folder_selected, savedInfo.displayName), Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    val allFilesAccessLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.StartActivityForResult()
+    ) {
+        viewModel.refreshPermissionsState()
+    }
+
+    val openAllFilesAccessSettings = {
+        HapticUtil.performUIHaptic(view)
+        try {
+            val intent = StorageHelper.createManageAllFilesAccessIntent(context)
+            allFilesAccessLauncher.launch(intent)
+        } catch (_: Exception) {
+            try {
+                val fallback = Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
+                allFilesAccessLauncher.launch(fallback)
+            } catch (_: Exception) {
+                try {
+                    val appDetails = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                        data = Uri.fromParts("package", context.packageName, null)
+                    }
+                    allFilesAccessLauncher.launch(appDetails)
+                } catch (_: Exception) {
+                }
+            }
+        }
+    }
+
+    val openSystemNotificationSettings = {
+        HapticUtil.performUIHaptic(view)
+        try {
+            val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            context.startActivity(intent)
+        } catch (_: Exception) {
+            try {
+                val fallback = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                    data = Uri.fromParts("package", context.packageName, null)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                context.startActivity(fallback)
+            } catch (_: Exception) {
+                Toast.makeText(context, context.getString(R.string.settings_toast_notifications_open_error), Toast.LENGTH_SHORT).show()
+            }
         }
     }
 
@@ -169,7 +253,7 @@ fun SettingsScreen(
             .padding(horizontal = 16.dp)
             .padding(top = topInsetPadding + 10.dp, bottom = 140.dp)
             .testTag("settings_screen"),
-        verticalArrangement = Arrangement.spacedBy(4.dp)
+        verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         Row(
             modifier = Modifier
@@ -200,7 +284,7 @@ fun SettingsScreen(
                     ) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "Back",
+                            contentDescription = stringResource(R.string.action_back),
                             tint = onPrimaryContainer,
                             modifier = Modifier.size(20.dp)
                         )
@@ -210,14 +294,14 @@ fun SettingsScreen(
 
                     Column {
                         Text(
-                            text = "Settings",
+                            text = stringResource(R.string.settings_title),
                             style = MaterialTheme.typography.headlineMedium,
                             fontWeight = FontWeight.Bold,
                             color = onSurface
                         )
                         Spacer(modifier = Modifier.height(2.dp))
                         Text(
-                            text = "Customize your theme, accent colors, storage access, and unpacking defaults",
+                            text = stringResource(R.string.settings_subtitle),
                             style = MaterialTheme.typography.bodyMedium,
                             color = onSurfaceVariant
                         )
@@ -234,14 +318,29 @@ fun SettingsScreen(
                 )
             }
 
-        Column {
-            Spacer(modifier = Modifier.height(8.dp))
-            ExpressiveSectionHeader(
-                title = "Appearance & Theme",
-                accentColor = primary
+        Column(modifier = Modifier.fillMaxWidth()) {
+            ExpressiveSettingsAccordionHeader(
+                icon = Icons.Default.Palette,
+                title = stringResource(R.string.settings_section_appearance),
+                subtitle = stringResource(R.string.settings_section_appearance_subtitle),
+                itemCount = 5,
+                isExpanded = appearanceExpanded,
+                onToggle = { appearanceExpanded = !appearanceExpanded },
+                accentColor = primary,
+                modifier = Modifier.testTag("settings_section_appearance_accordion")
             )
-            Spacer(modifier = Modifier.height(4.dp))
-        }
+
+            AnimatedVisibility(
+                visible = appearanceExpanded,
+                enter = ExpressiveMotion.AccordionEnterTransition,
+                exit = ExpressiveMotion.AccordionExitTransition
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 4.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
 
         ExpressiveGroupedCard(
             position = ExpressiveGroupPosition.TOP,
@@ -258,12 +357,12 @@ fun SettingsScreen(
                         Spacer(modifier = Modifier.width(10.dp))
                         Column {
                             Text(
-                                text = "Theme Mode",
+                                text = stringResource(R.string.settings_theme_mode_title),
                                 style = MaterialTheme.typography.titleSmall,
                                 color = onSurface
                             )
                             Text(
-                                text = "Switch between dark, light, or automatic system appearance",
+                                text = stringResource(R.string.settings_theme_mode_subtitle),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = onSurfaceVariant
                             )
@@ -295,7 +394,7 @@ fun SettingsScreen(
                                 contentAlignment = Alignment.Center
                             ) {
                                 Text(
-                                    text = mode.label,
+                                    text = stringResource(mode.labelResId),
                                     style = MaterialTheme.typography.labelLarge,
                                     color = if (selected) onPrimary else onSurface
                                 )
@@ -320,12 +419,12 @@ fun SettingsScreen(
                         Spacer(modifier = Modifier.width(10.dp))
                         Column {
                             Text(
-                                text = "Accent Color",
+                                text = stringResource(R.string.settings_accent_color_title),
                                 style = MaterialTheme.typography.titleSmall,
                                 color = onSurface
                             )
                             Text(
-                                text = "Pick an expressive accent color shared across every screen",
+                                text = stringResource(R.string.settings_accent_color_subtitle),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = onSurfaceVariant
                             )
@@ -369,7 +468,7 @@ fun SettingsScreen(
                                             if (selected) {
                                                 Icon(
                                                     imageVector = Icons.Default.Check,
-                                                    contentDescription = "Selected",
+                                                    contentDescription = stringResource(R.string.cd_selected),
                                                     tint = onPrimary,
                                                     modifier = Modifier.size(13.dp)
                                                 )
@@ -378,16 +477,18 @@ fun SettingsScreen(
                                         Spacer(modifier = Modifier.width(10.dp))
                                         Column {
                                             Text(
-                                                text = palette.label,
+                                                text = stringResource(palette.labelResId),
                                                 style = MaterialTheme.typography.titleSmall,
                                                 color = if (selected) onPrimaryContainer else onSurface,
-                                                maxLines = 1
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
                                             )
                                             Text(
-                                                text = palette.subtitle,
+                                                text = stringResource(palette.subtitleResId),
                                                 style = MaterialTheme.typography.bodySmall,
                                                 color = onSurfaceVariant,
-                                                maxLines = 1
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis
                                             )
                                         }
                                     }
@@ -397,6 +498,68 @@ fun SettingsScreen(
                     }
                 }
             }
+
+        val effectiveAppLanguage = if (appLanguage == AppLanguage.SYSTEM && !isSystemLanguageSupported) {
+            AppLanguage.ENGLISH
+        } else {
+            appLanguage
+        }
+        val languageSubtitle = when (effectiveAppLanguage) {
+            AppLanguage.SYSTEM -> stringResource(R.string.language_system_default)
+            else -> effectiveAppLanguage.nativeName
+        }
+
+        ExpressiveGroupedCard(
+            position = ExpressiveGroupPosition.MIDDLE,
+            containerColor = surfaceContainer
+        ) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable {
+                        HapticUtil.performUIHaptic(view)
+                        showLanguagePicker = true
+                    }
+                    .padding(16.dp)
+                    .testTag("settings_language_selector"),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    modifier = Modifier.weight(1f),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Language,
+                        contentDescription = null,
+                        tint = primary,
+                        modifier = Modifier.size(22.dp)
+                    )
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column {
+                        Text(
+                            text = stringResource(R.string.settings_language_title),
+                            style = MaterialTheme.typography.titleSmall,
+                            color = onSurface
+                        )
+                        Text(
+                            text = languageSubtitle,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = primary
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.width(12.dp))
+
+                Icon(
+                    imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                    contentDescription = null,
+                    tint = onSurfaceVariant.copy(alpha = 0.7f),
+                    modifier = Modifier.size(20.dp)
+                )
+            }
+        }
 
         ExpressiveGroupedCard(
             position = ExpressiveGroupPosition.MIDDLE,
@@ -422,12 +585,12 @@ fun SettingsScreen(
                         Spacer(modifier = Modifier.width(12.dp))
                         Column {
                             Text(
-                                text = "Progressive Bottom & Top Blur",
+                                text = stringResource(R.string.settings_blur_title),
                                 style = MaterialTheme.typography.titleSmall,
                                 color = onSurface
                             )
                             Text(
-                                text = "Smoothly blurs content scrolling behind the floating navigation bar and status bar",
+                                text = stringResource(R.string.settings_blur_subtitle),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = onSurfaceVariant
                             )
@@ -473,12 +636,12 @@ fun SettingsScreen(
                         Spacer(modifier = Modifier.width(12.dp))
                         Column {
                             Text(
-                                text = "Swipe Between Tabs",
+                                text = stringResource(R.string.settings_swipe_tabs_title),
                                 style = MaterialTheme.typography.titleSmall,
                                 color = onSurface
                             )
                             Text(
-                                text = "Allow fluid horizontal swiping across all 5 main workspace tabs",
+                                text = stringResource(R.string.settings_swipe_tabs_subtitle),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = onSurfaceVariant
                             )
@@ -499,37 +662,33 @@ fun SettingsScreen(
                     )
                 }
             }
-
-        Column {
-            Spacer(modifier = Modifier.height(8.dp))
-            ExpressiveSectionHeader(
-                title = "Permissions & System Access",
-                accentColor = primary
-            )
-            Spacer(modifier = Modifier.height(4.dp))
-        }
-
-        val openSystemNotificationSettings = {
-            HapticUtil.performUIHaptic(view)
-            try {
-                val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
-                    putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                }
-                context.startActivity(intent)
-            } catch (_: Exception) {
-                try {
-                    val fallback = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                        data = Uri.fromParts("package", context.packageName, null)
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    }
-                    context.startActivity(fallback)
-                } catch (_: Exception) {
-                    Toast.makeText(context, "Unable to open notification settings", Toast.LENGTH_SHORT).show()
-                }
             }
         }
+        }
 
+        Column(modifier = Modifier.fillMaxWidth()) {
+            ExpressiveSettingsAccordionHeader(
+                icon = Icons.Default.Security,
+                title = stringResource(R.string.settings_section_permissions),
+                subtitle = stringResource(R.string.settings_section_permissions_subtitle),
+                itemCount = if (isAllFilesAccessSupported) 3 else 2,
+                isExpanded = permissionsExpanded,
+                onToggle = { permissionsExpanded = !permissionsExpanded },
+                accentColor = primary,
+                modifier = Modifier.testTag("settings_section_permissions_accordion")
+            )
+
+            AnimatedVisibility(
+                visible = permissionsExpanded,
+                enter = ExpressiveMotion.AccordionEnterTransition,
+                exit = ExpressiveMotion.AccordionExitTransition
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 4.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
         ExpressiveGroupedCard(
             position = ExpressiveGroupPosition.TOP,
             containerColor = surfaceContainer
@@ -565,15 +724,15 @@ fun SettingsScreen(
                         Spacer(modifier = Modifier.width(12.dp))
                         Column {
                             Text(
-                                text = "Notifications",
+                                text = stringResource(R.string.settings_notifications_title),
                                 style = MaterialTheme.typography.titleSmall,
                                 color = onSurface
                             )
                             Text(
                                 text = if (notificationsEnabled)
-                                    "Active • Tap to manage in system notification settings"
+                                    stringResource(R.string.settings_notifications_enabled_subtitle)
                                 else
-                                    "Allow notifications for extraction and compression tasks",
+                                    stringResource(R.string.settings_notifications_disabled_subtitle),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = onSurfaceVariant
                             )
@@ -586,14 +745,14 @@ fun SettingsScreen(
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(
                                 imageVector = Icons.Default.CheckCircle,
-                                contentDescription = "Notifications Enabled",
+                                contentDescription = stringResource(R.string.settings_notifications_enabled_cd),
                                 tint = primary,
                                 modifier = Modifier.size(22.dp)
                             )
                             Spacer(modifier = Modifier.width(4.dp))
                             Icon(
                                 imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                                contentDescription = "Open Notification Settings",
+                                contentDescription = stringResource(R.string.settings_notifications_open_cd),
                                 tint = onSurfaceVariant,
                                 modifier = Modifier.size(20.dp)
                             )
@@ -615,14 +774,96 @@ fun SettingsScreen(
                             ),
                             modifier = Modifier.testTag("settings_grant_notifications_button")
                         ) {
-                            Text("Allow", fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
+                            Text(stringResource(R.string.settings_notifications_allow), fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
                         }
                     }
                 }
             }
 
+        if (isAllFilesAccessSupported) {
+            ExpressiveGroupedCard(
+                position = ExpressiveGroupPosition.MIDDLE,
+                containerColor = surfaceContainer
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { openAllFilesAccessSettings() }
+                        .padding(16.dp)
+                        .testTag("settings_all_files_access_row"),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Security,
+                            contentDescription = null,
+                            tint = primary,
+                            modifier = Modifier.size(24.dp)
+                        )
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column {
+                            Text(
+                                text = stringResource(R.string.settings_all_files_access_title),
+                                style = MaterialTheme.typography.titleSmall,
+                                color = onSurface
+                            )
+                            Text(
+                                text = if (allFilesAccessEnabled) {
+                                    stringResource(R.string.settings_all_files_access_enabled_subtitle)
+                                } else {
+                                    stringResource(R.string.settings_all_files_access_disabled_subtitle)
+                                },
+                                style = MaterialTheme.typography.bodySmall,
+                                color = onSurfaceVariant
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.width(10.dp))
+
+                    if (allFilesAccessEnabled) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.CheckCircle,
+                                contentDescription = stringResource(R.string.settings_all_files_access_title),
+                                tint = primary,
+                                modifier = Modifier.size(22.dp)
+                            )
+                            Spacer(modifier = Modifier.width(4.dp))
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                                contentDescription = null,
+                                tint = onSurfaceVariant,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    } else {
+                        Button(
+                            onClick = { openAllFilesAccessSettings() },
+                            shape = PillShape,
+                            colors = ButtonDefaults.buttonColors(
+                                containerColor = primary,
+                                contentColor = onPrimary
+                            ),
+                            modifier = Modifier.testTag("settings_grant_all_files_access_button")
+                        ) {
+                            Text(
+                                text = stringResource(R.string.settings_all_files_access_allow),
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.ExtraBold
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
         ExpressiveGroupedCard(
-            position = ExpressiveGroupPosition.MIDDLE,
+            position = ExpressiveGroupPosition.BOTTOM,
             containerColor = surfaceContainer
         ) {
                 val activeFolder = grantedFolder
@@ -645,15 +886,15 @@ fun SettingsScreen(
                             Spacer(modifier = Modifier.width(12.dp))
                             Column(modifier = Modifier.weight(1f)) {
                                 Text(
-                                    text = "Persistent Folder Access",
+                                    text = stringResource(R.string.settings_folder_access_title),
                                     style = MaterialTheme.typography.titleSmall,
                                     color = onSurface
                                 )
                                 Text(
                                     text = if (activeFolder != null) {
-                                        "Zero-copy folder permission is active and saved across app restarts."
+                                        stringResource(R.string.settings_folder_access_active_subtitle)
                                     } else {
-                                        "Grant a folder once for zero-copy unpacking of 4GB+ ZIP, APK, and .7z archives."
+                                        stringResource(R.string.settings_folder_access_inactive_subtitle)
                                     },
                                     style = MaterialTheme.typography.bodySmall,
                                     color = onSurfaceVariant
@@ -677,7 +918,7 @@ fun SettingsScreen(
                                 )
                                 Spacer(modifier = Modifier.width(4.dp))
                                 Text(
-                                    text = "ACTIVE",
+                                    text = stringResource(R.string.settings_folder_active_badge),
                                     fontSize = 10.sp,
                                     fontWeight = FontWeight.ExtraBold,
                                     color = onPrimaryContainer,
@@ -698,7 +939,7 @@ fun SettingsScreen(
                                 .testTag("settings_granted_folder_card")
                         ) {
                             Text(
-                                text = "SELECTED FOLDER",
+                                text = stringResource(R.string.settings_folder_selected_label),
                                 fontSize = 10.sp,
                                 fontWeight = FontWeight.ExtraBold,
                                 color = primary,
@@ -749,7 +990,7 @@ fun SettingsScreen(
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text(
-                                    text = "Change Folder",
+                                    text = stringResource(R.string.settings_folder_change),
                                     style = MaterialTheme.typography.labelLarge
                                 )
                             }
@@ -758,7 +999,7 @@ fun SettingsScreen(
                                 onClick = {
                                     HapticUtil.performUIHaptic(view)
                                     viewModel.removeGrantedFolder()
-                                    Toast.makeText(context, "Folder permission removed", Toast.LENGTH_SHORT).show()
+                                    Toast.makeText(context, context.getString(R.string.settings_toast_folder_removed), Toast.LENGTH_SHORT).show()
                                 },
                                 modifier = Modifier
                                     .testTag("settings_remove_saf_folder_button"),
@@ -775,7 +1016,7 @@ fun SettingsScreen(
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text(
-                                    text = "Remove",
+                                    text = stringResource(R.string.settings_folder_remove),
                                     style = MaterialTheme.typography.labelLarge
                                 )
                             }
@@ -802,143 +1043,42 @@ fun SettingsScreen(
                             )
                             Spacer(modifier = Modifier.width(8.dp))
                             Text(
-                                text = "Grant Folder Access",
+                                text = stringResource(R.string.settings_folder_grant),
                                 style = MaterialTheme.typography.labelLarge
                             )
                         }
                     }
                 }
             }
-
-        ExpressiveGroupedCard(
-            position = ExpressiveGroupPosition.BOTTOM,
-            containerColor = surfaceContainer
-        ) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(16.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Row(
-                        modifier = Modifier.weight(1f),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.VerifiedUser,
-                            contentDescription = null,
-                            tint = primary,
-                            modifier = Modifier.size(22.dp)
-                        )
-                        Spacer(modifier = Modifier.width(12.dp))
-                        Column {
-                            Text(
-                                text = "Default Archive App",
-                                style = MaterialTheme.typography.titleSmall,
-                                color = onSurface
-                            )
-                            Text(
-                                text = "Set KaiHatch to open .zip, .tar, and .gz files by default",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = onSurfaceVariant
-                            )
-                        }
-                    }
-
-                    Button(
-                        onClick = {
-                            HapticUtil.performUIHaptic(view)
-                            try {
-                                val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
-                                    data = Uri.fromParts("package", context.packageName, null)
-                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                                }
-                                context.startActivity(intent)
-                            } catch (_: Exception) {
-                                Toast.makeText(context, "Unable to open system settings", Toast.LENGTH_SHORT).show()
-                            }
-                        },
-                        shape = PillShape,
-                        colors = ButtonDefaults.buttonColors(
-                            containerColor = surfaceContainerHigh,
-                            contentColor = onSurface
-                        ),
-                        modifier = Modifier.testTag("settings_open_system_app_info_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Settings,
-                            contentDescription = null,
-                            modifier = Modifier.size(15.dp)
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text("System", style = MaterialTheme.typography.labelLarge)
-                    }
-                }
             }
-
-        Column {
-            Spacer(modifier = Modifier.height(8.dp))
-            ExpressiveSectionHeader(
-                title = "Unpacking & Storage",
-                accentColor = primary
-            )
-            Spacer(modifier = Modifier.height(4.dp))
+        }
         }
 
-        ExpressiveGroupedCard(
-            position = ExpressiveGroupPosition.TOP,
-            containerColor = surfaceContainer
-        ) {
-                Row(
+        Column(modifier = Modifier.fillMaxWidth()) {
+            ExpressiveSettingsAccordionHeader(
+                icon = Icons.Default.Science,
+                title = stringResource(R.string.settings_section_unpacking),
+                subtitle = stringResource(R.string.settings_section_unpacking_subtitle),
+                itemCount = 3,
+                isExpanded = miscExpanded,
+                onToggle = { miscExpanded = !miscExpanded },
+                accentColor = primary,
+                modifier = Modifier.testTag("settings_section_misc_accordion")
+            )
+
+            AnimatedVisibility(
+                visible = miscExpanded,
+                enter = ExpressiveMotion.AccordionEnterTransition,
+                exit = ExpressiveMotion.AccordionExitTransition
+            ) {
+                Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(16.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
+                        .padding(top = 4.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
                 ) {
-                    Row(
-                        modifier = Modifier.weight(1f),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Bolt,
-                            contentDescription = null,
-                            tint = primary,
-                            modifier = Modifier.size(24.dp)
-                        )
-                        Spacer(modifier = Modifier.width(12.dp))
-                        Column {
-                            Text(
-                                text = "Smart In-Place Unpacking",
-                                style = MaterialTheme.typography.titleSmall,
-                                color = onSurface
-                            )
-                            Text(
-                                text = "Reclaims storage space as each file is extracted",
-                                style = MaterialTheme.typography.bodySmall,
-                                color = onSurfaceVariant
-                            )
-                        }
-                    }
-
-                    Switch(
-                        checked = isHatchMode,
-                        onCheckedChange = {
-                            HapticUtil.performUIHaptic(view)
-                            viewModel.setHatchMode(it)
-                        },
-                        colors = SwitchDefaults.colors(
-                            checkedThumbColor = onPrimary,
-                            checkedTrackColor = primary
-                        ),
-                        modifier = Modifier.testTag("settings_hatch_mode_switch")
-                    )
-                }
-            }
-
         ExpressiveGroupedCard(
-            position = ExpressiveGroupPosition.MIDDLE,
+            position = ExpressiveGroupPosition.TOP,
             containerColor = surfaceContainer
         ) {
                 Row(
@@ -961,12 +1101,12 @@ fun SettingsScreen(
                         Spacer(modifier = Modifier.width(12.dp))
                         Column {
                             Text(
-                                text = "Space Lab & Synthetic Benchmark",
+                                text = stringResource(R.string.settings_spacelab_title),
                                 style = MaterialTheme.typography.titleSmall,
                                 color = onSurface
                             )
                             Text(
-                                text = "Generate synthetic archives and benchmark zero-copy ftruncate()",
+                                text = stringResource(R.string.settings_spacelab_subtitle),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = onSurfaceVariant
                             )
@@ -985,7 +1125,7 @@ fun SettingsScreen(
                         ),
                         modifier = Modifier.testTag("settings_open_space_lab_button")
                     ) {
-                        Text("Open Lab", style = MaterialTheme.typography.labelLarge)
+                        Text(stringResource(R.string.settings_spacelab_open_button), style = MaterialTheme.typography.labelLarge)
                     }
                 }
             }
@@ -1014,12 +1154,12 @@ fun SettingsScreen(
                         Spacer(modifier = Modifier.width(12.dp))
                         Column {
                             Text(
-                                text = "Temporary Preview Cache",
+                                text = stringResource(R.string.settings_temp_cache_title),
                                 style = MaterialTheme.typography.titleSmall,
                                 color = onSurface
                             )
                             Text(
-                                text = "Clear temporary files created when previewing inside archives",
+                                text = stringResource(R.string.settings_temp_cache_subtitle),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = onSurfaceVariant
                             )
@@ -1030,7 +1170,7 @@ fun SettingsScreen(
                         onClick = {
                             HapticUtil.performUIHaptic(view)
                             viewModel.clearTempCache {
-                                Toast.makeText(context, "Temporary preview cache cleared", Toast.LENGTH_SHORT).show()
+                                Toast.makeText(context, context.getString(R.string.settings_toast_temp_cache_cleared), Toast.LENGTH_SHORT).show()
                             }
                         },
                         shape = PillShape,
@@ -1040,7 +1180,7 @@ fun SettingsScreen(
                         ),
                         modifier = Modifier.testTag("clear_temp_cache_button")
                     ) {
-                        Text("Clean", style = MaterialTheme.typography.labelLarge)
+                        Text(stringResource(R.string.settings_temp_cache_clean_button), style = MaterialTheme.typography.labelLarge)
                     }
                 }
             }
@@ -1069,12 +1209,12 @@ fun SettingsScreen(
                         Spacer(modifier = Modifier.width(12.dp))
                         Column {
                             Text(
-                                text = "Reset Activity & Savings",
+                                text = stringResource(R.string.settings_reset_history_title),
                                 style = MaterialTheme.typography.titleSmall,
                                 color = onSurface
                             )
                             Text(
-                                text = "Clear past unpacking logs and reset the saved storage counter",
+                                text = stringResource(R.string.settings_reset_history_subtitle),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = onSurfaceVariant
                             )
@@ -1085,7 +1225,7 @@ fun SettingsScreen(
                         onClick = {
                             HapticUtil.performUIHaptic(view)
                             viewModel.historyRepo.clearHistory()
-                            Toast.makeText(context, "Operation history cleared", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, context.getString(R.string.settings_toast_history_cleared), Toast.LENGTH_SHORT).show()
                         },
                         shape = PillShape,
                         colors = ButtonDefaults.buttonColors(
@@ -1094,15 +1234,33 @@ fun SettingsScreen(
                         ),
                         modifier = Modifier.testTag("settings_clear_history_button")
                     ) {
-                        Text("Reset", style = MaterialTheme.typography.labelLarge)
+                        Text(stringResource(R.string.settings_reset_history_button), style = MaterialTheme.typography.labelLarge)
                     }
                 }
             }
+            }
+        }
+        }
 
         Column {
             Spacer(modifier = Modifier.height(8.dp))
-            SettingsAboutCard(isDark = isDark)
+            SettingsAboutCard(
+                isDark = isDark,
+                isCheckingForUpdates = isCheckingForUpdates,
+                onCheckForUpdates = { viewModel.checkForUpdatesManually() }
+            )
         }
+    }
+
+    if (showLanguagePicker) {
+        LanguagePickerDialog(
+            selectedLanguage = appLanguage,
+            onLanguageSelected = { language ->
+                viewModel.setAppLanguage(language)
+            },
+            onDismiss = { showLanguagePicker = false },
+            isSystemLanguageSupported = isSystemLanguageSupported
+        )
     }
 }
 
@@ -1117,4 +1275,151 @@ private fun swatchColorFor(
     AppAccentPalette.VIOLET -> if (isDark) Color(0xFFD8B4FE) else Color(0xFF7C3AED)
     AppAccentPalette.CORAL -> if (isDark) Color(0xFFFDA4AF) else Color(0xFFE11D48)
     AppAccentPalette.AMBER -> if (isDark) Color(0xFFFDE047) else Color(0xFFD97706)
+}
+
+@Composable
+private fun ExpressiveSettingsAccordionHeader(
+    icon: ImageVector,
+    title: String,
+    subtitle: String,
+    itemCount: Int,
+    isExpanded: Boolean,
+    onToggle: () -> Unit,
+    accentColor: Color,
+    modifier: Modifier = Modifier
+) {
+    val view = LocalView.current
+    val surfaceContainer = MaterialTheme.colorScheme.surfaceContainer
+    val onSurface = MaterialTheme.colorScheme.onSurface
+    val onSurfaceVariant = MaterialTheme.colorScheme.onSurfaceVariant
+    val primaryContainer = MaterialTheme.colorScheme.primaryContainer
+    val onPrimaryContainer = MaterialTheme.colorScheme.onPrimaryContainer
+    val outlineVariant = MaterialTheme.colorScheme.outlineVariant
+
+    val chevronRotationState = animateFloatAsState(
+        targetValue = if (isExpanded) 180f else 0f,
+        animationSpec = ExpressiveMotion.AccordionFloatSpring,
+        label = "accordion_chevron_rotation"
+    )
+
+    val shape = if (isExpanded) AccordionExpandedShape else AccordionCollapsedShape
+
+    Surface(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = androidx.compose.material3.ripple(),
+                role = Role.Button,
+                onClick = {
+                    HapticUtil.performUIHaptic(view)
+                    onToggle()
+                }
+            ),
+        shape = shape,
+        color = surfaceContainer,
+        border = BorderStroke(
+            width = 1.dp,
+            color = if (isExpanded) accentColor.copy(alpha = 0.45f) else outlineVariant.copy(alpha = 0.28f)
+        )
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(
+                modifier = Modifier.weight(1f),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(42.dp)
+                        .clip(AccordionIconShape)
+                        .background(
+                            if (isExpanded) accentColor.copy(alpha = 0.20f) else primaryContainer
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = icon,
+                        contentDescription = null,
+                        tint = if (isExpanded) accentColor else onPrimaryContainer,
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
+
+                Spacer(modifier = Modifier.width(13.dp))
+
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = title,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = onSurface
+                    )
+                    Spacer(modifier = Modifier.height(2.dp))
+                    Text(
+                        text = subtitle,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.width(10.dp))
+
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .clip(CircleShape)
+                        .background(
+                            if (isExpanded) accentColor.copy(alpha = 0.16f) else outlineVariant.copy(alpha = 0.15f)
+                        )
+                        .border(
+                            width = 1.dp,
+                            color = if (isExpanded) accentColor.copy(alpha = 0.35f) else outlineVariant.copy(alpha = 0.3f),
+                            shape = CircleShape
+                        )
+                        .padding(horizontal = 9.dp, vertical = 3.dp),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text(
+                        text = "$itemCount",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = if (isExpanded) accentColor else onSurfaceVariant,
+                        fontFamily = JetBrainsMonoFontFamily
+                    )
+                }
+
+                Box(
+                    modifier = Modifier
+                        .size(32.dp)
+                        .clip(CircleShape)
+                        .background(
+                            if (isExpanded) accentColor.copy(alpha = 0.14f) else Color.Transparent
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.KeyboardArrowDown,
+                        contentDescription = null,
+                        tint = if (isExpanded) accentColor else onSurfaceVariant,
+                        modifier = Modifier
+                            .size(20.dp)
+                            .graphicsLayer { rotationZ = chevronRotationState.value }
+                    )
+                }
+            }
+        }
+    }
 }

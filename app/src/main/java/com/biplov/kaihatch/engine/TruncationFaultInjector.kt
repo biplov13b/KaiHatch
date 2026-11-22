@@ -15,8 +15,13 @@ enum class DestructivePoint {
     AFTER_STORED_SLICE_TRUNCATE,
     BEFORE_TAILSWAP_PWRITE,
     MID_TAILSWAP_PWRITE_TORN,
+    BEFORE_TAILSWAP_PWRITE_SYNC,
     AFTER_TAILSWAP_PWRITE_BEFORE_TRUNCATE,
+    AFTER_TAILSWAP_PREPARED_CKPT,
+    AFTER_TAILSWAP_RELOCATED_CKPT_BEFORE_TRUNCATE,
+    BEFORE_TAILSWAP_TRUNCATE_SYNC,
     AFTER_TAILSWAP_TRUNCATE,
+    AFTER_TAILSWAP_COMMITTED_CKPT,
     BEFORE_WINDOW_TRUNCATE,
     AFTER_WINDOW_TRUNCATE_BEFORE_JOURNAL,
     AFTER_JOURNAL_SAVE,
@@ -25,7 +30,11 @@ enum class DestructivePoint {
     MID_7Z_SLOT_PWRITE_TORN,
     AFTER_7Z_SLOT_PWRITE_BEFORE_TRUNCATE,
     AFTER_7Z_SLOT_TRUNCATE,
-    BEFORE_FINAL_ZERO_TRUNCATE
+    BEFORE_FINAL_ZERO_TRUNCATE,
+    BEFORE_RESTORE_CD_WRITE,
+    MID_RESTORE_CD_WRITE,
+    AFTER_RESTORE_CD_WRITE_BEFORE_SYNC,
+    AFTER_RESTORE_VERIFY_BEFORE_CLEANUP
 }
 
 /**
@@ -108,12 +117,15 @@ class RecordingFaultInjector(
         val count = pointCounts.computeIfAbsent(point) { AtomicInteger(0) }.incrementAndGet()
         visitedPoints.add(point to currentArchiveBytes)
         onStepCallback?.invoke(point, currentArchiveBytes, detail)
-        if (triggerPoint == point && count == triggerOnOccurrence) {
+        val isTriggeredTornMidPoint = simulateTornWrite &&
+            triggerPoint == point &&
+            (point == DestructivePoint.MID_TAILSWAP_PWRITE_TORN || point == DestructivePoint.MID_7Z_SLOT_PWRITE_TORN)
+        if ((triggerPoint == point && count == triggerOnOccurrence) || isTriggeredTornMidPoint) {
             throw SimulatedFaultException(
                 point = point,
-                occurrence = count,
+                occurrence = if (isTriggeredTornMidPoint) triggerOnOccurrence else count,
                 archiveBytesAtFault = currentArchiveBytes,
-                message = "Simulated fault at $point (#$count, bytes=$currentArchiveBytes, detail=$detail)"
+                message = "Simulated fault at $point (#${if (isTriggeredTornMidPoint) triggerOnOccurrence else count}, bytes=$currentArchiveBytes, detail=$detail)"
             )
         }
     }
@@ -126,8 +138,8 @@ class RecordingFaultInjector(
             else -> return false
         }
         if (triggerPoint != expectedMidPoint) return false
-        val nextCount = (pointCounts[expectedMidPoint]?.get() ?: 0) + 1
-        return nextCount == triggerOnOccurrence
+        val pwriteCount = pointCounts[point]?.get() ?: 0
+        return pwriteCount == triggerOnOccurrence
     }
 
     override fun onPhysicalTruncate(point: DestructivePoint, previousSize: Long, newSize: Long) {
